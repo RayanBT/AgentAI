@@ -1,154 +1,155 @@
 import streamlit as st
 import os
-import time
-from tenacity import retry, wait_fixed, stop_after_attempt # Pour gérer les retries proprement
+import yfinance as yf
+from crewai import Agent, Task, Crew, Process
+from crewai.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
+from duckduckgo_search import DDGS
 
 # --- 1. CONFIGURATION SYSTÈME ---
+# On coupe la télémétrie et on fait taire les warnings OpenAI
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 os.environ["OPENAI_API_KEY"] = "NA"
 
-# --- 2. IMPORTS ---
-import yfinance as yf
-from crewai import Agent, Task, Crew, Process, LLM
-from crewai.tools import tool
-from duckduckgo_search import DDGS
+# --- 2. INTERFACE STREAMLIT ---
+st.set_page_config(page_title="Agent PEA Gemini", page_icon="💎", layout="wide")
 
-# --- 3. INTERFACE STREAMLIT ---
-st.set_page_config(page_title="Agent PEA", page_icon="📈")
-st.title("📈 Assistant PEA (Mode Éco)")
-st.markdown("Analyse financière & Sentiment - **Optimisé Groq Free**")
+st.title("💎 Assistant PEA (Propulsé par Google Gemini)")
+st.markdown("""
+Cet agent utilise **Gemini 1.5 Flash**.  
+Il est plus stable, plus rapide et a une limite d'utilisation beaucoup plus large que Groq.
+""")
 
-# --- 4. SIDEBAR ---
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.header("🔑 Configuration")
-    api_key = st.text_input("Ta clé API Groq", type="password")
+    api_key = st.text_input("Ta clé Google API", type="password")
     if not api_key:
-        st.warning("Entre ta clé.")
+        st.warning("Entre ta clé pour démarrer.")
+        st.markdown("[Obtenir une clé Google ici](https://aistudio.google.com/app/apikey)")
 
-# --- 5. DÉFINITION DES OUTILS ---
+# --- 4. DÉFINITION DES OUTILS (ROBUSTES) ---
 
 @tool("Recherche Web")
 def recherche_web_tool(query: str):
-    """Cherche sur le web (News/Sentiment)."""
+    """
+    Recherche sur internet (X, Reddit, News).
+    """
     try:
+        # On utilise DDGS directement pour éviter les bugs de dépendances
         with DDGS() as ddgs:
-            # On réduit à 3 résultats pour économiser des tokens
-            results = list(ddgs.text(query, max_results=3))
+            results = list(ddgs.text(query, max_results=5))
             if not results:
-                return "Pas de résultat."
-            return "\n".join([f"- {r['body']}" for r in results])
+                return "Aucun résultat trouvé sur le web."
+            # On formate proprement
+            return "\n".join([f"- {r['title']}: {r['body']}" for r in results])
     except Exception as e:
-        return "Erreur recherche."
+        return f"Erreur de recherche : {e}"
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
-    """Données financières (Prix, PER, Dividende)."""
+    """
+    Récupère les données financières (Prix, PER, Dividende).
+    """
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        # On ne garde que l'essentiel strict pour économiser des tokens
+        
+        # Sécurisation des données si elles manquent
         data = {
-            "Nom": info.get('longName'),
-            "Prix": info.get('currentPrice'),
-            "PER": info.get('forwardPE'),
-            "Div": (info.get('dividendYield', 0) or 0) * 100,
-            "Avis": info.get('recommendationKey')
+            "Nom": info.get('longName', ticker),
+            "Prix": info.get('currentPrice', 'N/A'),
+            "Devise": info.get('currency', 'EUR'),
+            "PER (Price/Earnings)": info.get('forwardPE', 'N/A'),
+            "Dividende (%)": (info.get('dividendYield', 0) or 0) * 100,
+            "Recommandation Analystes": info.get('recommendationKey', 'Inconnue'),
+            "Secteur": info.get('sector', 'N/A')
         }
         return str(data)
-    except Exception:
-        return "Erreur données."
+    except Exception as e:
+        return f"Erreur Yahoo Finance : {e}"
 
-# --- 6. MOTEUR DE L'AGENT ---
+# --- 5. MOTEUR DE L'AGENT ---
 def run_crew(ticker_symbol):
-    os.environ["GROQ_API_KEY"] = api_key
     
-    # Modèle Rapide 8B
-    my_llm = LLM(
-        model="groq/llama-3.1-8b-instant",
-        temperature=0.1
+    # --- LE CERVEAU GOOGLE ---
+    # On configure Gemini via LangChain (très stable avec CrewAI)
+    gemini_llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        verbose=True,
+        temperature=0.4,
+        google_api_key=api_key
     )
 
-    # Agents (Descriptions raccourcies pour économiser le quota)
+    # Agent 1 : L'Analyste Financier
     analyste = Agent(
-        role='Analyste',
-        goal='Donner les chiffres clés',
-        backstory="Expert comptable factuel.",
+        role='Analyste Financier Senior',
+        goal='Analyser les fondamentaux boursiers',
+        backstory="Tu es un expert comptable rigoureux. Tu ne te fies qu'aux chiffres (Dividendes, PER, Croissance).",
         verbose=True,
         allow_delegation=False,
-        llm=my_llm,
-        tools=[analyse_bourse_tool],
-        max_rpm=10 # Limite la vitesse pour éviter l'erreur 429
+        llm=gemini_llm,
+        tools=[analyse_bourse_tool]
     )
 
+    # Agent 2 : L'Expert Réseaux Sociaux
     trader = Agent(
-        role='Trader',
-        goal='Donner le sentiment web',
-        backstory="Expert réseaux sociaux.",
+        role='Expert Sentiment Marché',
+        goal='Sonder l\'opinion publique sur le web',
+        backstory="Tu es un trader connecté qui scanne le web pour sentir la psychologie des investisseurs (Peur ou Euphorie).",
         verbose=True,
         allow_delegation=False,
-        llm=my_llm,
-        tools=[recherche_web_tool],
-        max_rpm=10 # Limite la vitesse
+        llm=gemini_llm,
+        tools=[recherche_web_tool]
     )
 
     # Tâches
     task_finance = Task(
-        description=f"Donne Prix, PER, Dividende pour {ticker_symbol}.",
-        expected_output="Chiffres clés.",
+        description=f"Analyse les fondamentaux de l'action {ticker_symbol}. Je veux le Prix, le PER et le Dividende.",
+        expected_output="Un résumé des données financières clés.",
         agent=analyste
     )
 
     task_sentiment = Task(
-        description=f"Cherche avis sur {ticker_symbol} (Twitter/Reddit).",
-        expected_output="Sentiment global (Bref).",
+        description=f"Cherche sur le web ce qu'on dit de {ticker_symbol}. Regarde les avis récents.",
+        expected_output="Une synthèse de l'ambiance (Positive/Négative/Neutre).",
         agent=trader
     )
 
     task_synthese = Task(
-        description=f"Synthèse pour {ticker_symbol} (PEA). Achat/Vente ? Court.",
-        expected_output="Conseil final court.",
+        description=f"En combinant les chiffres et l'ambiance, rédige une recommandation pour un investisseur PEA sur {ticker_symbol}.",
+        expected_output="Un rapport final clair avec une recommandation (Achat/Vente/Attente) justifiée.",
         agent=analyste,
         context=[task_finance, task_sentiment]
     )
 
+    # Lancement de l'équipe
     crew = Crew(
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
         process=Process.sequential,
-        memory=False,
+        memory=False, # On garde la mémoire désactivée pour la vitesse
         verbose=True
     )
 
     return crew.kickoff()
 
-# --- 7. EXÉCUTION AVEC RETRY ---
-ticker_input = st.text_input("Action (ex: TTE.PA)", "TTE.PA")
+# --- 6. EXÉCUTION ---
+ticker_input = st.text_input("Symbole de l'action (ex: TTE.PA, AI.PA)", "TTE.PA")
 
-if st.button("Lancer 🚀"):
+if st.button("Lancer l'Analyse avec Gemini 🚀"):
     if not api_key:
-        st.error("Clé manquante !")
+        st.error("⚠️ Il manque ta clé Google API dans la barre latérale !")
     else:
-        with st.status("Analyse en cours...", expanded=True) as status:
+        with st.status("Les agents Gemini travaillent...", expanded=True) as status:
             try:
-                st.write("🔄 Démarrage (Si ça prend du temps, c'est la pause anti-spam)...")
+                st.write("🌍 Initialisation de l'équipe...")
+                resultat = run_crew(ticker_input)
+                status.update(label="✅ Analyse Terminée !", state="complete", expanded=False)
                 
-                # Système de Retry manuel
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        resultat = run_crew(ticker_input)
-                        status.update(label="✅ Terminé !", state="complete", expanded=False)
-                        st.markdown("### 📊 Résultat")
-                        st.markdown(resultat)
-                        break # Si ça marche, on sort de la boucle
-                    except Exception as e:
-                        if "429" in str(e) or "Rate limit" in str(e):
-                            wait_time = 10 * (attempt + 1)
-                            st.write(f"⚠️ Limite API atteinte. Pause de {wait_time}s...")
-                            time.sleep(wait_time)
-                        else:
-                            raise e # Si c'est une autre erreur, on plante vraiment
-                            
+                st.divider()
+                st.markdown("### 📊 Rapport Final")
+                st.markdown(resultat)
             except Exception as e:
-                st.error(f"Erreur finale : {e}")
+                st.error(f"Une erreur est survenue : {e}")
                 status.update(label="Erreur", state="error")
