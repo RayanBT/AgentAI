@@ -25,38 +25,50 @@ st.markdown("""
         border-radius: 8px;
         padding: 10px;
     }
-    /* Style du compte à rebours */
-    .stAlert { font-weight: bold; }
+    .stProgress > div > div > div > div {
+        background-color: #00ADB5;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. STRATÉGIES ---
-HUNTING_STRATEGIES = {
-    "💎 Small Caps (Pépites FR)": "Trouve 4 actions françaises (PEA) small/mid caps sous-évaluées hors CAC40.",
-    "🚀 Tech & Green Growth": "Trouve 4 actions européennes (PEA) Tech ou Énergie Verte en forte croissance.",
-    "🛡️ Rendement Aristocrats": "Trouve 4 actions françaises solides avec dividende >5% et stable.",
-    "🔥 Market Momentum": "Trouve 4 actions PEA qui buzzent positivement cette semaine."
+# --- 2. STRATÉGIES & LISTES DE SECOURS ---
+# Si le stratège échoue, on utilise ces listes par défaut pour ne pas bloquer l'utilisateur
+FALLBACK_LISTS = {
+    "💎 Small Caps (Pépites FR)": ["VLA.PA", "ATO.PA", "SESL.PA", "BEN.PA"],
+    "🚀 Tech & Green Growth": ["SOIT.PA", "AI.PA", "DSY.PA", "STM.PA"],
+    "🛡️ Rendement Aristocrats": ["ACA.PA", "BNP.PA", "ENGI.PA", "RNO.PA"],
+    "🔥 Market Momentum": ["MC.PA", "RMS.PA", "OR.PA", "AIR.PA"]
 }
 
-# --- 3. GESTION DES MODÈLES (FILTRE STRICT) ---
+HUNTING_STRATEGIES = {k: v for k, v in [
+    ("💎 Small Caps (Pépites FR)", "Trouve 4 actions françaises (PEA) small/mid caps sous-évaluées hors CAC40."),
+    ("🚀 Tech & Green Growth", "Trouve 4 actions européennes (PEA) Tech ou Énergie Verte en forte croissance."),
+    ("🛡️ Rendement Aristocrats", "Trouve 4 actions françaises solides avec dividende >5% et stable."),
+    ("🔥 Market Momentum", "Trouve 4 actions PEA qui buzzent positivement cette semaine.")
+]}
+
+# --- 3. FILTRE OPTIMISÉ (On garde le bon, on jette l'image) ---
 @st.cache_data(show_spinner=False)
 def get_active_models(api_key):
     try:
         genai.configure(api_key=api_key)
         models = list(genai.list_models())
         valid = []
-        # LISTE NOIRE pour éviter les crashs
-        BANNED = ['tts', 'vision', 'embedding', 'geek', 'gecko', 'image', 'banana', 'nano', 'exp', 'preview']
+        
+        # ON BANNI L'IMAGE ET L'AUDIO, MAIS ON GARDE "EXP" (Gemini 2.0 est souvent en Exp)
+        BANNED = ['tts', 'vision', 'embedding', 'geek', 'gecko', 'image', 'banana', 'nano']
         
         for m in models:
             if 'generateContent' not in m.supported_generation_methods: continue
             if any(b in m.name.lower() for b in BANNED): continue
             valid.append(m.name)
             
-        # TRI : On privilégie la stabilité
+        # TRI PAR INTELLIGENCE
+        # On met Gemini 2.0 ou 1.5 Pro en premier pour la stratégie, car il faut être malin
         return sorted(valid, key=lambda x: (
-            0 if "gemini-1.5-flash" in x and "8b" not in x else 
-            1 if "gemini-2.0-flash" in x else 2
+            0 if "gemini-2.0-flash" in x else 
+            1 if "gemini-1.5-flash" in x else 
+            2 if "pro" in x else 3
         ))
     except: return []
 
@@ -69,10 +81,10 @@ with st.sidebar:
     if api_key:
         models = get_active_models(api_key)
         if models:
-            st.success(f"🟢 {len(models)} Modèles Stables")
+            st.success(f"🟢 {len(models)} Modèles Prêts")
             crew_models = [m.replace("models/", "gemini/") for m in models]
         else:
-            st.error("Aucun modèle stable.")
+            st.error("Aucun modèle valide.")
 
 # --- 5. OUTILS ---
 @tool("Recherche Web")
@@ -80,31 +92,23 @@ def recherche_web_tool(query: str):
     """Recherche Web."""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=2))
+            results = list(ddgs.text(query, max_results=3)) # Un peu plus de résultats pour la stratégie
             return "\n".join([f"- {r['body']}" for r in results]) if results else "Rien."
     except: return "Erreur."
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
-    """Récupère Prix, PER et Dividende."""
+    """Données financières."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        
-        # Récupération sécurisée des données (évite les None)
         price = info.get('currentPrice') or info.get('regularMarketPrice') or 0.0
         per = info.get('forwardPE') or info.get('trailingPE') or 0.0
         div = (info.get('dividendYield', 0) or 0) * 100
-        
-        # On retourne un format JSON String propre
-        return str({
-            "Prix": round(price, 2),
-            "PER": round(per, 2),
-            "Div": round(div, 2)
-        })
+        return str({"Prix": round(price, 2), "PER": round(per, 2), "Div": round(div, 2)})
     except: return str({"Prix": 0, "PER": 0, "Div": 0})
 
-# --- 6. MOTEUR D'EXÉCUTION (AVEC PAUSE VISUELLE) ---
+# --- 6. MOTEUR ROBUSTE ---
 def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, context=""):
     os.environ["GOOGLE_API_KEY"] = api_key
     os.environ["GEMINI_API_KEY"] = api_key
@@ -117,16 +121,16 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
         for model_name in model_list:
             clean_name = model_name.replace("gemini/", "")
             try:
-                log_func(f"⚡ {clean_name} analyse...", "running")
+                log_func(f"⚡ {clean_name} travaille...", "running")
                 my_llm = LLM(model=model_name, api_key=api_key, temperature=0.1)
                 agent = Agent(role=role, goal="Expertise", backstory="Pro.", verbose=True, allow_delegation=False, llm=my_llm, tools=tools, max_rpm=10)
                 
                 desc = task_desc + (f"\nCONTEXTE:\n{context}" if context else "")
-                task = Task(description=desc, expected_output="Synthétique.", agent=agent)
+                task = Task(description=desc, expected_output="Réponse directe.", agent=agent)
                 
                 crew = Crew(agents=[agent], tasks=[task], verbose=True)
                 result = crew.kickoff()
-                log_func(f"✅ {step_name} validé.", "success")
+                log_func(f"✅ {step_name} OK.", "success")
                 return str(result)
 
             except Exception as e:
@@ -135,83 +139,90 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
                     match = re.search(r"retry in (\d+\.?\d*)s", err)
                     wait = float(match.group(1)) if match else 30.0
                     retry_delays.append(wait)
-                    log_func(f"⚠️ {clean_name} vide (Reset {int(wait)}s).", "warning")
+                    log_func(f"⚠️ {clean_name} vide. (Reset {int(wait)}s)", "warning")
                     time.sleep(1)
                     continue
                 if "404" in err or "400" in err: continue
         
-        # SI TOUT LE MONDE EST VIDE : PAUSE VISUELLE
         if not retry_delays: return None
         
         if current_retry < max_retries:
             wait_time = min(retry_delays) + 2
-            
-            # --- AFFICHAGE DU COMPTE A REBOURS ---
-            countdown_box = st.empty()
-            progress_bar = st.progress(0)
-            
+            # Animation d'attente
+            alert = st.empty()
+            prog = st.progress(0)
             for i in range(int(wait_time), 0, -1):
-                percent = 1.0 - (i / wait_time)
-                countdown_box.error(f"🛑 **PAUSE QUOTA GOOGLE** : Tous les agents rechargent... Reprise dans **{i}s**")
-                progress_bar.progress(percent)
+                alert.warning(f"⏳ Recharge Quotas Google... Reprise dans {i}s")
+                prog.progress(1.0 - (i/wait_time))
                 time.sleep(1)
-            
-            # Nettoyage après attente
-            countdown_box.empty()
-            progress_bar.empty()
-            log_func("🔄 Reprise du travail !", "info")
+            alert.empty()
+            prog.empty()
+            log_func("🔄 Reprise...", "info")
             current_retry += 1
         else: return None
 
-# --- 7. LOGIQUE MÉTIER & PARSING (Correction du Bug des "0") ---
+# --- 7. LOGIQUE DE CHASSE (C'est ici que j'ai tout réparé) ---
+def hunt_tickers(strategy_name, strategy_prompt, status_func):
+    status_func(f"🧠 Le Stratège analyse : {strategy_name}...", "running")
+    
+    prompt = f"""
+    Tu es un expert financier.
+    Mission : {strategy_prompt}
+    Trouve 4 tickers Yahoo Finance (ex: AIR.PA) correspondant à la demande.
+    IMPORTANT : Ta réponse doit contenir les tickers. Peu importe le texte autour, je veux voir les tickers.
+    """
+    
+    # On essaie de faire travailler l'IA
+    res = execute_step_smart("Stratège", prompt, "Stratège", [recherche_web_tool], crew_models, lambda m,s: None)
+    
+    tickers = []
+    if res:
+        # --- EXTRACTION CHIRURGICALE PAR REGEX ---
+        # Cherche tout ce qui ressemble à XXX.PA, XXX.DE, XXX.AS
+        found = re.findall(r'\b[A-Z0-9]{2,5}\.[A-Z]{2,3}\b', res.upper())
+        tickers = list(set(found))[:4] # On dédoublonne et on garde 4
+    
+    # --- FILET DE SÉCURITÉ ---
+    if not tickers:
+        status_func("⚠️ Recherche web difficile, utilisation de la liste de secours...", "warning")
+        time.sleep(2)
+        tickers = FALLBACK_LISTS.get(strategy_name, ["TTE.PA", "AIR.PA", "BNP.PA", "SAN.PA"])
+    
+    return tickers
+
 def parse_finance_data(fin_str):
-    """Extrait les chiffres avec des Regex souples."""
+    """Parsing robuste."""
     try:
-        # On nettoie la chaine pour faciliter la recherche
         clean_str = fin_str.replace("'", "").replace('"', '').replace(":", " ")
-        
-        # Regex qui cherche "Prix" suivi de chiffres (avec point ou virgule)
         match_prix = re.search(r"(?:Prix|Price)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
         match_per = re.search(r"(?:PER|P/E)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
         match_div = re.search(r"(?:Div|Yield)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
-        
         return {
             "Prix": float(match_prix.group(1)) if match_prix else 0.0,
             "PER": float(match_per.group(1)) if match_per else 0.0,
             "Div": float(match_div.group(1)) if match_div else 0.0
         }
-    except:
-        return {"Prix": 0.0, "PER": 0.0, "Div": 0.0}
+    except: return {"Prix": 0.0, "PER": 0.0, "Div": 0.0}
 
 def analyze_one_stock(ticker, update_status_func):
     if not crew_models: return None
-    
     dossier = ""
     def log_wrapper(msg, state): update_status_func(msg, state)
 
-    # 1. FINANCE : On force l'IA à répondre un format précis pour éviter le bug des 0
-    prompt_finance = f"""
-    Utilise l'outil Bourse pour {ticker}.
-    IMPORTANT : Ta réponse DOIT être UNIQUEMENT sous cette forme :
-    Prix: X
-    PER: Y
-    Div: Z
-    Ne mets pas de texte autour.
-    """
-    res_fin = execute_step_smart("Finance", prompt_finance, "Analyste", [analyse_bourse_tool], crew_models, log_wrapper)
+    # 1. Finance
+    prompt_fin = f"Donne Prix, PER, Div pour {ticker}. Format strict: 'Prix: X, PER: Y, Div: Z'"
+    res_fin = execute_step_smart("Finance", prompt_fin, "Analyste", [analyse_bourse_tool], crew_models, log_wrapper)
     if not res_fin: return None
-    
-    # Extraction Immédiate
     fin_data = parse_finance_data(res_fin)
     dossier += f"FINANCE: {res_fin}\n"
     
-    # 2. SENTIMENT
+    # 2. Sentiment
     res_soc = execute_step_smart("Sentiment", f"Avis web sur {ticker}.", "Trader", [recherche_web_tool], crew_models, log_wrapper)
     if not res_soc: res_soc = "Neutre"
     dossier += f"SENTIMENT: {res_soc}\n"
     
-    # 3. VERDICT
-    res_con = execute_step_smart("Notation", f"Analyse dossier {ticker}. Note /10 et avis court (ACHAT/VENTE).", "Conseiller", [], crew_models, log_wrapper, dossier)
+    # 3. Verdict
+    res_con = execute_step_smart("Notation", f"Dossier {ticker}. Note /10 et avis court (ACHAT/VENTE).", "Conseiller", [], crew_models, log_wrapper, dossier)
     
     score = 0
     match = re.search(r"(\d+)/10", str(res_con))
@@ -223,55 +234,33 @@ def analyze_one_stock(ticker, update_status_func):
     
     return {"Ticker": ticker, "Data": fin_data, "Score": score, "Rec": rec, "Avis": res_con}
 
-def hunt_tickers(strategy_prompt, status_func):
-    status_func("🧠 Le Stratège scanne...", "running")
-    prompt = f"Expert bourse. Mission: {strategy_prompt}. Donne UNIQUEMENT 4 tickers Yahoo (ex: AI.PA) séparés par virgules."
-    res = execute_step_smart("Stratège", prompt, "Stratège", [recherche_web_tool], crew_models, lambda m,s: None)
-    if res:
-        clean = res.replace(" ", "").replace("\n", "").split(",")
-        return [t for t in clean if "." in t or len(t) > 2][:4]
-    return []
-
-# --- 8. INTERFACE DASHBOARD ---
-st.markdown("## 💎 AI Financial Analyst <span style='font-size:0.6em; color:gray'>Pro Edition</span>", unsafe_allow_html=True)
-
+# --- 8. INTERFACE ---
+st.markdown("## 💎 AI Financial Analyst <span style='font-size:0.6em; color:gray'>Pro</span>", unsafe_allow_html=True)
 tab_solo, tab_radar = st.tabs(["🔍 Analyse Focus", "📡 Radar de Marché"])
 
-# === TAB 1 : FOCUS ===
 with tab_solo:
     c1, c2 = st.columns([3, 1])
     ticker_in = c1.text_input("Symbole", "TTE.PA", label_visibility="collapsed")
     if c2.button("Analyser", key="btn_s") and api_key:
         with st.status("Analyse en cours...", expanded=True) as status:
             log_spot = st.empty()
-            def ui_log(m, t): 
-                if t=="running": log_spot.info(m)
-                elif t=="success": log_spot.success(m)
-                elif t=="warning": log_spot.warning(m)
-                elif t=="error": log_spot.error(m)
-            
-            res = analyze_one_stock(ticker_in, ui_log)
+            res = analyze_one_stock(ticker_in, lambda m,t: log_spot.info(m) if t=="running" else log_spot.success(m) if t=="success" else log_spot.warning(m))
             if res:
                 status.update(label="Terminé", state="complete", expanded=False)
                 st.markdown("---")
-                
                 k1, k2, k3 = st.columns([1,2,1])
                 k1.metric("Score", f"{res['Score']}/10")
                 k2.markdown(f"<h2 style='text-align:center;color:{'#00FF41' if 'ACHAT' in res['Rec'] else '#FF4136'}'>{res['Rec']}</h2>", unsafe_allow_html=True)
                 k3.metric("Confiance", "Haute")
-                
-                # BUG DES 0 CORRIGÉ ICI
                 d1, d2, d3 = st.columns(3)
                 d1.metric("Prix", f"{res['Data']['Prix']} €")
                 d2.metric("PER", f"{res['Data']['PER']:.1f}")
                 d3.metric("Div", f"{res['Data']['Div']:.2f} %")
-                
                 st.info(f"**Avis:** {res['Avis']}")
 
-# === TAB 2 : RADAR ===
 with tab_radar:
     c_s, c_b = st.columns([3, 1])
-    strat = c_s.selectbox("Stratégie", list(HUNTING_STRATEGIES.keys()), label_visibility="collapsed")
+    strat_key = c_s.selectbox("Stratégie", list(HUNTING_STRATEGIES.keys()), label_visibility="collapsed")
     
     if c_b.button("Scanner", key="btn_r") and api_key:
         st.markdown("---")
@@ -281,42 +270,40 @@ with tab_radar:
         
         def r_log(m, t): radar_stat.caption(f"📡 {m}")
         
-        tickers = hunt_tickers(HUNTING_STRATEGIES[strat], r_log)
+        # 1. CHASSE AVEC FALLBACK
+        tickers = hunt_tickers(strat_key, HUNTING_STRATEGIES[strat_key], r_log)
         
-        if tickers:
-            radar_stat.markdown(f"**Cibles:** `{'` `'.join(tickers)}`")
-            data = []
+        radar_stat.markdown(f"**Cibles:** `{'` `'.join(tickers)}`")
+        data = []
+        
+        for i, t in enumerate(tickers):
+            if i > 0:
+                r_log(f"Pause tactique (3s) avant {t}...", "running")
+                time.sleep(3)
             
-            for i, t in enumerate(tickers):
-                if i > 0:
-                    r_log(f"Pause tactique (3s) avant {t}...", "running")
-                    time.sleep(3)
+            res = analyze_one_stock(t, r_log)
+            if res:
+                data.append({
+                    "Action": t, 
+                    "Score": res['Score'], 
+                    "Avis": res['Rec'],
+                    "Prix": f"{res['Data']['Prix']} €", 
+                    "PER": f"{res['Data']['PER']:.1f}",
+                    "Rendement": f"{res['Data']['Div']:.1f}%",
+                    "Résumé": res['Avis']
+                })
                 
-                res = analyze_one_stock(t, r_log)
-                if res:
-                    data.append({
-                        "Action": t, 
-                        "Score": res['Score'], 
-                        "Avis": res['Rec'],
-                        "Prix": f"{res['Data']['Prix']} €", # Affichera la vraie valeur
-                        "PER": f"{res['Data']['PER']:.1f}",
-                        "Rendement": f"{res['Data']['Div']:.1f}%",
-                        "Résumé": res['Avis']
-                    })
-                    
-                    df = pd.DataFrame(data).sort_values(by="Score", ascending=False)
-                    table_spot.dataframe(
-                        df, 
-                        column_order=("Action", "Score", "Avis", "Prix", "PER", "Rendement", "Résumé"),
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config={
-                            "Score": st.column_config.ProgressColumn("Note", format="%d/10", min_value=0, max_value=10),
-                            "Résumé": st.column_config.TextColumn("Détail", width="large")
-                        }
-                    )
-                radar_bar.progress((i+1)/len(tickers))
-            radar_stat.success("Scan terminé !")
-            st.balloons()
-        else:
-            st.error("Aucune cible trouvée.")
+                df = pd.DataFrame(data).sort_values(by="Score", ascending=False)
+                table_spot.dataframe(
+                    df, 
+                    column_order=("Action", "Score", "Avis", "Prix", "PER", "Rendement", "Résumé"),
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Score": st.column_config.ProgressColumn("Note", format="%d/10", min_value=0, max_value=10),
+                        "Résumé": st.column_config.TextColumn("Détail", width="large")
+                    }
+                )
+            radar_bar.progress((i+1)/len(tickers))
+        radar_stat.success("Scan terminé !")
+        st.balloons()
