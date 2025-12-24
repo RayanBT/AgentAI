@@ -1,9 +1,16 @@
 import streamlit as st
 import os
+
+# --- CORRECTION 1 : Désactiver la télémétrie CrewAI pour éviter les erreurs de Threads ---
+os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
+
 import yfinance as yf
 from crewai import Agent, Task, Crew, Process
 from langchain_groq import ChatGroq
-from crewai_tools import DuckDuckGoSearchTool, tool
+from crewai import Tool
+# --- CORRECTION 2 : Utiliser l'outil LangChain Community (plus stable) ---
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain.tools import tool as langchain_tool
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
@@ -11,7 +18,7 @@ st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
 st.title("📈 Assistant PEA Intelligent")
 st.markdown("Analyse financière & Sentiment social (X/Reddit)")
 
-# --- SIDEBAR (Barre latérale pour les réglages) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input("Ta clé API Groq", type="password")
@@ -24,9 +31,11 @@ def run_analysis(ticker):
     llm = ChatGroq(model="llama3-70b-8192", temperature=0.5)
 
     # 2. Outils
-    search_tool = DuckDuckGoSearchTool()
+    # On initialise l'outil de recherche version stable
+    search_tool = DuckDuckGoSearchRun()
 
-    @tool("Outil Analyse Boursiere")
+    # On définit l'outil bourse avec le décorateur de LangChain pour être sûr de la compatibilité
+    @langchain_tool("Outil Analyse Boursiere")
     def stock_analysis_tool(ticker_symbol: str):
         """Récupère les données financières (Prix, PER, Dividende)."""
         try:
@@ -49,7 +58,7 @@ def run_analysis(ticker):
         goal='Analyser les fondamentaux',
         backstory="Expert comptable rigoureux.",
         llm=llm,
-        tools=[stock_analysis_tool],
+        tools=[stock_analysis_tool], # L'outil custom
         verbose=True
     )
 
@@ -58,7 +67,7 @@ def run_analysis(ticker):
         goal='Analyser X et Reddit',
         backstory="Expert des réseaux sociaux et de la psychologie de marché.",
         llm=llm,
-        tools=[search_tool],
+        tools=[search_tool], # L'outil DuckDuckGo stable
         verbose=True
     )
 
@@ -100,11 +109,14 @@ if st.button("Lancer l'analyse 🚀"):
     else:
         with st.status("L'agent travaille... (Regarde les détails ici)", expanded=True) as status:
             st.write("🤖 Initialisation des agents...")
-            # C'est ici que la magie opère
-            resultat = run_analysis(ticker_input)
-            st.write("✅ Analyse terminée !")
-            status.update(label="Mission accomplie !", state="complete", expanded=False)
-        
-        st.divider()
-        st.subheader("Rapport Final")
-        st.markdown(resultat)
+            try:
+                resultat = run_analysis(ticker_input)
+                st.write("✅ Analyse terminée !")
+                status.update(label="Mission accomplie !", state="complete", expanded=False)
+                
+                st.divider()
+                st.subheader("Rapport Final")
+                st.markdown(resultat)
+            except Exception as e:
+                st.error(f"Une erreur est survenue : {e}")
+                status.update(label="Erreur", state="error")
