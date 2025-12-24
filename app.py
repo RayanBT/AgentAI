@@ -2,16 +2,15 @@ import streamlit as st
 import os
 
 # --- DISABLE TELEMETRY ---
-# Cela évite les erreurs de "Threads" rouges dans la console
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
 import yfinance as yf
-from crewai import Agent, Task, Crew, Process
+# 1. IMPORT PRINCIPAL (On prend 'tool' ici)
+from crewai import Agent, Task, Crew, Process, tool
 from langchain_groq import ChatGroq
 
-# --- IMPORT OFFICIEL ---
-# Maintenant que crewai-tools est dans requirements.txt, ça va marcher !
-from crewai_tools import DuckDuckGoSearchTool, tool
+# 2. IMPORT DES OUTILS (On ne prend QUE DuckDuckGo ici)
+from crewai_tools import DuckDuckGoSearchTool
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
@@ -34,6 +33,7 @@ def run_analysis(ticker):
     # 2. Outils
     search_tool = DuckDuckGoSearchTool()
 
+    # L'outil Bourse (On utilise le décorateur @tool importé de 'crewai')
     @tool("Outil Analyse Boursiere")
     def stock_analysis_tool(ticker_symbol: str):
         """Récupère les données financières (Prix, PER, Dividende)."""
@@ -120,5 +120,5 @@ if st.button("Lancer l'analyse 🚀"):
                 st.markdown(resultat)
             except Exception as e:
                 st.error(f"Une erreur est survenue : {e}")
-                st.info("Astuce : Si l'erreur persiste, essaie de redémarrer l'app (Reboot App).")
+                st.warning("Vérifie ta clé API Groq.")
                 status.update(label="Erreur", state="error")
