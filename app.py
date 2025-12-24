@@ -2,7 +2,9 @@ import streamlit as st
 import os
 
 # --- 1. CONFIGURATION SYSTÈME ---
+# TRICK : On désactive la télémétrie ET on donne une fausse clé OpenAI pour éviter le crash
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
+os.environ["OPENAI_API_KEY"] = "NA" 
 
 # --- 2. IMPORTS ---
 import yfinance as yf
@@ -10,8 +12,7 @@ from crewai import Agent, Task, Crew, Process
 from langchain_groq import ChatGroq
 from langchain_community.tools import DuckDuckGoSearchRun
 
-# --- LA CORRECTION CRUCIALE ---
-# C'est LE bon chemin d'importation pour la version actuelle
+# Import officiel CrewAI
 from crewai.tools import tool
 
 # --- 3. INTERFACE STREAMLIT ---
@@ -26,26 +27,20 @@ with st.sidebar:
     if not api_key:
         st.warning("Entre ta clé pour démarrer.")
 
-# --- 5. DÉFINITION DES OUTILS (Format CrewAI Natif) ---
+# --- 5. DÉFINITION DES OUTILS ---
 
-# Outil 1 : Recherche Web
-# On utilise le décorateur de CrewAI (@tool) pour emballer le moteur de LangChain
 @tool("Outil Recherche Web")
 def recherche_web_tool(query: str):
     """
-    Recherche sur internet. Utile pour trouver l'actualité, 
-    les avis sur Reddit ou X (Twitter) à propos d'une action.
+    Recherche sur internet (X, Reddit, News).
     """
-    # On instancie le moteur de recherche à l'intérieur de la fonction
     search = DuckDuckGoSearchRun()
     return search.run(query)
 
-# Outil 2 : Analyse Bourse
 @tool("Outil Analyse Boursiere")
 def analyse_bourse_tool(ticker: str):
     """
-    Récupère les données boursières via Yahoo Finance (Prix, PER, Dividende).
-    L'input doit être un ticker (ex: 'TTE.PA').
+    Récupère les données boursières Yahoo Finance.
     """
     try:
         stock = yf.Ticker(ticker)
@@ -60,7 +55,7 @@ def analyse_bourse_tool(ticker: str):
         }
         return str(data)
     except Exception as e:
-        return f"Erreur récupération Yahoo : {e}"
+        return f"Erreur Yahoo : {e}"
 
 # --- 6. MOTEUR DE L'AGENT ---
 def run_crew(ticker_symbol):
@@ -71,7 +66,7 @@ def run_crew(ticker_symbol):
         temperature=0.5
     )
 
-    # Agent 1 : Financier
+    # Agents
     analyste = Agent(
         role='Analyste Financier',
         goal='Analyser les fondamentaux',
@@ -79,10 +74,9 @@ def run_crew(ticker_symbol):
         verbose=True,
         allow_delegation=False,
         llm=llm,
-        tools=[analyse_bourse_tool] # C'est maintenant un outil CrewAI valide
+        tools=[analyse_bourse_tool]
     )
 
-    # Agent 2 : Social
     trader = Agent(
         role='Trader Sentiment',
         goal='Sonder l\'opinion sur les réseaux',
@@ -90,33 +84,36 @@ def run_crew(ticker_symbol):
         verbose=True,
         allow_delegation=False,
         llm=llm,
-        tools=[recherche_web_tool] # C'est maintenant un outil CrewAI valide
+        tools=[recherche_web_tool]
     )
 
     # Tâches
     task_finance = Task(
-        description=f"Donne moi le Prix, le PER et le Dividende de {ticker_symbol}.",
-        expected_output="Chiffres clés.",
+        description=f"Donne les chiffres clés (Prix, PER, Dividende) pour {ticker_symbol}.",
+        expected_output="Synthèse financière.",
         agent=analyste
     )
 
     task_sentiment = Task(
-        description=f"Cherche sur le web : 'site:twitter.com {ticker_symbol} avis' et 'site:reddit.com {ticker_symbol}'. Résume l'ambiance.",
-        expected_output="Analyse sentiment.",
+        description=f"Cherche l'avis des gens sur {ticker_symbol} via 'site:twitter.com {ticker_symbol}' et Reddit.",
+        expected_output="Synthèse sentiment.",
         agent=trader
     )
 
     task_synthese = Task(
-        description=f"Synthèse finale pour {ticker_symbol} (Achat/Vente ?).",
-        expected_output="Recommandation finale.",
+        description=f"Synthèse finale : Faut-il investir dans {ticker_symbol} pour un PEA ? Argumente.",
+        expected_output="Rapport final.",
         agent=analyste,
         context=[task_finance, task_sentiment]
     )
 
+    # Lancement de l'équipe
     crew = Crew(
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
-        process=Process.sequential
+        process=Process.sequential,
+        memory=False, # <--- C'EST ICI LA CORRECTION MAJEURE (On désactive la mémoire OpenAI)
+        verbose=True
     )
 
     return crew.kickoff()
