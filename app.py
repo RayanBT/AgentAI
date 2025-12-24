@@ -1,78 +1,63 @@
 import streamlit as st
 import os
 import time
+import re
 import google.generativeai as genai
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from duckduckgo_search import DDGS
 import yfinance as yf
 
-# --- CONFIGURATION ---
+# --- 1. CONFIGURATION SYSTEME ---
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 os.environ["OPENAI_API_KEY"] = "NA"
 
-st.set_page_config(page_title="Agent PEA Filtré", page_icon="🛡️", layout="wide")
+# --- 2. INTERFACE ---
+st.set_page_config(page_title="Agent PEA Invincible", page_icon="🛡️", layout="wide")
 
-st.title("🛡️ Assistant PEA (Filtre Intelligent)")
+st.title("🛡️ Assistant PEA (Invincible)")
 st.markdown("""
-Système auto-adaptatif avec **exclusion des modèles incompatibles** (Audio/Vision).
-Seuls les modèles textuels stables sont utilisés.
+Système à **haute résilience**. Si tous les quotas gratuits sont épuisés, 
+l'agent se met en veille le temps nécessaire et **reprend automatiquement le travail**.
 """)
 
-# --- FONCTION DE DECOUVERTE BLINDÉE ---
+# --- 3. FONCTIONS UTILITAIRES ---
 def get_active_models(api_key):
-    """
-    Récupère la liste des modèles ET exclut ceux qui ne font pas de texte pur.
-    """
+    """Découvre et trie les modèles."""
     try:
         genai.configure(api_key=api_key)
         models = list(genai.list_models())
-        
         valid_models = []
         for m in models:
             name = m.name.lower()
-            methods = m.supported_generation_methods
-            
-            # CRITÈRES D'EXCLUSION STRICTS
-            if 'generateContent' not in methods: continue # Doit pouvoir générer du contenu
-            if 'tts' in name: continue           # Pas de modèles Audio (Text-to-Speech)
-            if 'vision' in name: continue        # Pas de modèles Vision purs
-            if 'embedding' in name: continue     # Pas de modèles d'embedding
-            if 'geek' in name or 'gecko' in name: continue # Modèles trop petits
-            
+            if 'generateContent' not in m.supported_generation_methods: continue
+            if any(x in name for x in ['tts', 'vision', 'embedding', 'geek', 'gecko']): continue
             valid_models.append(m.name)
         
-        # TRI PAR PERFORMANCE (Flash Stable > Flash Exp > Pro)
-        sorted_models = sorted(valid_models, key=lambda x: (
-            0 if "gemini-2.0-flash" in x and "exp" not in x else  # Le roi : 2.0 Flash Stable
-            1 if "gemini-1.5-flash" in x and "8b" not in x else   # Le vice-roi : 1.5 Flash Stable
-            2 if "flash" in x else                                # Les autres Flash
-            3 if "pro" in x else                                  # Les Pro (plus lents)
-            4                                                     # Le reste
+        # Tri : Flash 2.0 > Flash 1.5 > Le reste
+        return sorted(valid_models, key=lambda x: (
+            0 if "gemini-2.0-flash" in x and "exp" not in x else
+            1 if "gemini-1.5-flash" in x and "8b" not in x else
+            2 if "flash" in x else 3
         ))
-        
-        # Format CrewAI
-        crew_models = [m.replace("models/", "gemini/") for m in sorted_models]
-        return crew_models
-    except Exception as e:
-        return []
+    except: return []
 
-# --- SIDEBAR ---
+# --- 4. SIDEBAR ---
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input("Ta clé Google API", type="password")
     
     if api_key:
-        available_models = get_active_models(api_key)
-        if available_models:
-            st.success(f"✅ {len(available_models)} modèles TEXTE valides !")
-            with st.expander("Voir la liste filtrée"):
-                for i, m in enumerate(available_models):
-                    st.caption(f"{i+1}. {m}")
+        models = get_active_models(api_key)
+        if models:
+            st.success(f"✅ {len(models)} modèles prêts au combat !")
+            # Transformation pour CrewAI
+            crew_models = [m.replace("models/", "gemini/") for m in models]
         else:
-            st.error("Aucun modèle valide trouvé.")
+            st.error("Aucun modèle valide.")
+            crew_models = []
 
-# --- OUTILS ---
+# --- 5. OUTILS ---
 @tool("Recherche Web")
 def recherche_web_tool(query: str):
     """Recherche Web."""
@@ -84,7 +69,7 @@ def recherche_web_tool(query: str):
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
-    """Données financières."""
+    """Données Bourse."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
@@ -95,106 +80,129 @@ def analyse_bourse_tool(ticker: str):
         })
     except: return "Erreur Yahoo."
 
-# --- EXECUTEUR D'ÉTAPE ---
+# --- 6. LE CŒUR DU SYSTÈME : EXECUTEUR AVEC ATTENTE INTELLIGENTE ---
 def execute_step_smart(step_name, task_description, agent_role, agent_tools, model_list, context_data=""):
     
     os.environ["GOOGLE_API_KEY"] = api_key
     os.environ["GEMINI_API_KEY"] = api_key
 
-    for model_name in model_list:
-        try:
+    # Paramètres de persévérance
+    max_global_retries = 3 # Combien de fois on accepte d'attendre si tout est vide
+    current_retry = 0
+
+    while current_retry <= max_global_retries:
+        
+        retry_delays = [] # Pour stocker les temps d'attente demandés par Google
+        
+        # 1. On essaie chaque modèle de la liste
+        for model_name in model_list:
             clean_name = model_name.replace("gemini/", "")
             
-            my_llm = LLM(model=model_name, api_key=api_key, temperature=0.1)
+            try:
+                # Création agent
+                my_llm = LLM(model=model_name, api_key=api_key, temperature=0.1)
+                agent = Agent(
+                    role=agent_role, goal="Tâche", backstory="Expert.", verbose=True,
+                    allow_delegation=False, llm=my_llm, tools=agent_tools, max_rpm=10
+                )
+                
+                # Création tâche
+                desc = task_description + (f"\nCONTEXTE:\n{context_data}" if context_data else "")
+                task = Task(description=desc, expected_output="Réponse courte.", agent=agent)
+                
+                # Exécution
+                crew = Crew(agents=[agent], tasks=[task], verbose=True)
+                result = crew.kickoff()
+                
+                # SUCCÈS !
+                st.toast(f"✅ Étape '{step_name}' réussie ({clean_name})", icon="🎉")
+                return str(result)
 
-            agent = Agent(
-                role=agent_role,
-                goal="Tâche unique",
-                backstory="Expert.",
-                verbose=True,
-                allow_delegation=False,
-                llm=my_llm,
-                tools=agent_tools,
-                max_rpm=10
-            )
-
-            full_desc = task_description
-            if context_data:
-                full_desc += f"\nINFO CONTEXTE :\n{context_data}"
-
-            task = Task(description=full_desc, expected_output="Réponse courte.", agent=agent)
-
-            crew = Crew(agents=[agent], tasks=[task], verbose=True)
-            result = crew.kickoff()
-            
-            st.toast(f"✅ Étape '{step_name}' réussie ({clean_name})", icon="🎉")
-            return str(result)
-
-        except Exception as e:
-            error_str = str(e)
-            # Gestion des erreurs typiques
-            if "400" in error_str and "modalities" in error_str:
-                # C'est l'erreur TTS ! On passe.
-                continue
-            if "404" in error_str: continue 
-            elif "429" in error_str or "Quota" in error_str or "ResourceExhausted" in error_str:
-                st.toast(f"⚠️ {clean_name} épuisé. Suivant...", icon="🔀")
-                time.sleep(1)
-                continue
-            else:
-                # On log l'erreur mais on essaie quand même le suivant au cas où
+            except Exception as e:
+                error_str = str(e)
+                
+                # Gestion fine des erreurs
+                if "404" in error_str or "400" in error_str: 
+                    continue # Modèle cassé, on passe
+                
+                if "429" in error_str or "Quota" in error_str or "ResourceExhausted" in error_str:
+                    # Extraction du temps d'attente
+                    match = re.search(r"retry in (\d+\.?\d*)s", error_str)
+                    wait_time = float(match.group(1)) if match else 60.0
+                    retry_delays.append(wait_time)
+                    
+                    st.toast(f"⚠️ {clean_name} vide (Reset: {int(wait_time)}s). Suivant...", icon="⏭️")
+                    time.sleep(1) # Petite pause rapide pour changer de modèle
+                    continue
+                
+                # Autre erreur inconnue
                 st.warning(f"Erreur sur {clean_name} : {e}")
-                continue
 
-    st.error(f"❌ Échec de l'étape '{step_name}' sur tous les modèles.")
-    return None
+        # 2. Si on arrive ici, c'est que TOUS les modèles ont échoué
+        if not retry_delays:
+            st.error("❌ Échec total (Erreurs techniques non liées aux quotas).")
+            return None
+            
+        # 3. Stratégie d'attente intelligente
+        if current_retry < max_global_retries:
+            # On prend le délai le plus court parmi tous les échecs + 2 secondes de sécurité
+            shortest_wait = min(retry_delays) + 2
+            
+            # Affichage du compte à rebours bloquant
+            alert_box = st.warning(f"🛑 Tous les agents sont épuisés. Pause tactique de {int(shortest_wait)}s...")
+            progress_bar = st.progress(0)
+            
+            for i in range(int(shortest_wait)):
+                time_left = int(shortest_wait) - i
+                alert_box.warning(f"⏳ Recharge des batteries... Reprise dans **{time_left}s**")
+                progress_bar.progress((i + 1) / int(shortest_wait))
+                time.sleep(1)
+            
+            # Nettoyage et reprise
+            alert_box.empty()
+            progress_bar.empty()
+            st.toast("🔋 Énergie récupérée ! Nouvelle tentative...", icon="🔄")
+            current_retry += 1
+            # La boucle while va recommencer au début de la liste des modèles !
+            
+        else:
+            st.error("❌ Abandon après trop de tentatives d'attente.")
+            return None
 
-# --- ORCHESTRATION ---
+# --- 7. ORCHESTRATION ---
 def run_full_analysis(ticker):
-    model_list = get_active_models(api_key)
-    if not model_list:
-        st.error("Aucun modèle disponible.")
+    if not crew_models:
+        st.error("Pas de modèles.")
         return None
 
     dossier = ""
     
-    # ETAPE 1
+    # Etape 1
     with st.spinner("📊 Analyse Financière..."):
-        res_finance = execute_step_smart(
-            "Finance", f"Donne Prix, PER et Dividende pour {ticker}.",
-            "Analyste", [analyse_bourse_tool], model_list
-        )
-        if not res_finance: return None
-        dossier += f"FINANCE:\n{res_finance}\n\n"
-        st.info(f"💰 Données : {res_finance}")
+        res = execute_step_smart("Finance", f"Donne Prix, PER, Div pour {ticker}.", "Analyste", [analyse_bourse_tool], crew_models)
+        if not res: return None
+        dossier += f"FINANCE: {res}\n"
+        st.info(f"💰 Données : {res}")
 
-    # ETAPE 2
+    # Etape 2
     with st.spinner("🌍 Analyse Sentiment..."):
-        res_social = execute_step_smart(
-            "Sentiment", f"Cherche sentiment web sur {ticker}.",
-            "Trader", [recherche_web_tool], model_list
-        )
-        if not res_social: return None
-        dossier += f"SENTIMENT:\n{res_social}\n\n"
+        res = execute_step_smart("Sentiment", f"Avis web sur {ticker}.", "Trader", [recherche_web_tool], crew_models)
+        if not res: return None
+        dossier += f"SENTIMENT: {res}\n"
 
-    # ETAPE 3
+    # Etape 3
     with st.spinner("🧠 Synthèse..."):
-        res_final = execute_step_smart(
-            "Conclusion", f"Conseil PEA pour {ticker} (Achat/Vente).",
-            "Conseiller", [], model_list, context_data=dossier
-        )
-        return res_final
+        res = execute_step_smart("Conclusion", f"Conseil PEA {ticker}.", "Conseiller", [], crew_models, dossier)
+        return res
 
-# --- EXECUTION ---
-ticker = st.text_input("Action (ex: TTE.PA)", "TTE.PA")
-
-if st.button("Lancer l'analyse 🚀"):
-    if not api_key:
-        st.error("Clé manquante !")
-    else:
-        final_report = run_full_analysis(ticker)
-        if final_report:
+# --- 8. UI ---
+ticker = st.text_input("Action", "TTE.PA")
+if st.button("Lancer 🚀"):
+    if api_key:
+        final = run_full_analysis(ticker)
+        if final:
             st.divider()
-            st.success("Terminé !")
-            st.markdown("### 🏆 Rapport Final")
-            st.markdown(final_report)
+            st.markdown("### 🏆 Résultat Final")
+            st.markdown(final)
+    else:
+        st.error("Clé manquante")
