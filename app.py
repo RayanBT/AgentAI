@@ -2,23 +2,21 @@ import streamlit as st
 import os
 
 # --- 1. CONFIGURATION SYSTÈME ---
-# TRICK : On désactive la télémétrie ET on donne une fausse clé OpenAI pour éviter le crash
+# On coupe la télémétrie pour éviter les logs rouges
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
-os.environ["OPENAI_API_KEY"] = "NA" 
+# On force une fausse clé OpenAI pour être sûr qu'il ne tente rien
+os.environ["OPENAI_API_KEY"] = "NA"
 
 # --- 2. IMPORTS ---
 import yfinance as yf
-from crewai import Agent, Task, Crew, Process
-from langchain_groq import ChatGroq
+from crewai import Agent, Task, Crew, Process, LLM # <--- On importe LLM ici
+from crewai.tools import tool # Import officiel CrewAI pour les outils
 from langchain_community.tools import DuckDuckGoSearchRun
-
-# Import officiel CrewAI
-from crewai.tools import tool
 
 # --- 3. INTERFACE STREAMLIT ---
 st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
 st.title("📈 Assistant PEA Intelligent")
-st.markdown("Analyse financière & Sentiment social (X/Reddit)")
+st.markdown("Analyse financière & Sentiment social (X/Reddit) - **Mode Natif Groq**")
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
@@ -26,6 +24,7 @@ with st.sidebar:
     api_key = st.text_input("Ta clé API Groq", type="password")
     if not api_key:
         st.warning("Entre ta clé pour démarrer.")
+        st.markdown("[Obtenir une clé Groq ici](https://console.groq.com/keys)")
 
 # --- 5. DÉFINITION DES OUTILS ---
 
@@ -59,10 +58,13 @@ def analyse_bourse_tool(ticker: str):
 
 # --- 6. MOTEUR DE L'AGENT ---
 def run_crew(ticker_symbol):
-    # Cerveau
-    llm = ChatGroq(
+    
+    # --- LA CORRECTION EST ICI ---
+    # Au lieu d'utiliser ChatGroq via LangChain, on utilise le LLM natif de CrewAI.
+    # Le préfixe "groq/" force CrewAI à utiliser le bon fournisseur.
+    my_llm = LLM(
+        model="groq/llama3-70b-8192",
         api_key=api_key,
-        model="llama3-70b-8192",
         temperature=0.5
     )
 
@@ -73,7 +75,7 @@ def run_crew(ticker_symbol):
         backstory="Expert comptable rigoureux.",
         verbose=True,
         allow_delegation=False,
-        llm=llm,
+        llm=my_llm,  # On lui donne le LLM natif
         tools=[analyse_bourse_tool]
     )
 
@@ -83,7 +85,7 @@ def run_crew(ticker_symbol):
         backstory="Expert réseaux sociaux (X, Reddit).",
         verbose=True,
         allow_delegation=False,
-        llm=llm,
+        llm=my_llm, # On lui donne le LLM natif
         tools=[recherche_web_tool]
     )
 
@@ -112,7 +114,7 @@ def run_crew(ticker_symbol):
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
         process=Process.sequential,
-        memory=False, # <--- C'EST ICI LA CORRECTION MAJEURE (On désactive la mémoire OpenAI)
+        memory=False, # Toujours désactivé pour éviter l'appel OpenAI
         verbose=True
     )
 
