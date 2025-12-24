@@ -2,21 +2,19 @@ import streamlit as st
 import os
 
 # --- 1. CONFIGURATION SYSTÈME ---
-# On coupe la télémétrie pour éviter les logs rouges
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
-# On force une fausse clé OpenAI pour être sûr qu'il ne tente rien
 os.environ["OPENAI_API_KEY"] = "NA"
 
 # --- 2. IMPORTS ---
 import yfinance as yf
-from crewai import Agent, Task, Crew, Process, LLM # <--- On importe LLM ici
-from crewai.tools import tool # Import officiel CrewAI pour les outils
+from crewai import Agent, Task, Crew, Process, LLM
+from crewai.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
 
 # --- 3. INTERFACE STREAMLIT ---
 st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
 st.title("📈 Assistant PEA Intelligent")
-st.markdown("Analyse financière & Sentiment social (X/Reddit) - **Mode Natif Groq**")
+st.markdown("Analyse financière & Sentiment social (X/Reddit)")
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
@@ -24,47 +22,42 @@ with st.sidebar:
     api_key = st.text_input("Ta clé API Groq", type="password")
     if not api_key:
         st.warning("Entre ta clé pour démarrer.")
-        st.markdown("[Obtenir une clé Groq ici](https://console.groq.com/keys)")
 
-# --- 5. DÉFINITION DES OUTILS ---
+# --- 5. OUTILS ---
 
 @tool("Outil Recherche Web")
 def recherche_web_tool(query: str):
-    """
-    Recherche sur internet (X, Reddit, News).
-    """
+    """Recherche sur internet (X, Reddit, News)."""
     search = DuckDuckGoSearchRun()
     return search.run(query)
 
 @tool("Outil Analyse Boursiere")
 def analyse_bourse_tool(ticker: str):
-    """
-    Récupère les données boursières Yahoo Finance.
-    """
+    """Récupère les données boursières Yahoo Finance."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        
         data = {
             "Entreprise": info.get('longName', ticker),
-            "Prix Actuel": info.get('currentPrice', 'N/A'),
-            "PER (Price/Earnings)": info.get('forwardPE', 'N/A'),
+            "Prix": info.get('currentPrice', 'N/A'),
+            "PER": info.get('forwardPE', 'N/A'),
             "Dividende (%)": (info.get('dividendYield', 0) or 0) * 100,
-            "Recommandation Analystes": info.get('recommendationKey', 'Inconnue')
+            "Recommandation": info.get('recommendationKey', 'Inconnue')
         }
         return str(data)
     except Exception as e:
         return f"Erreur Yahoo : {e}"
 
-# --- 6. MOTEUR DE L'AGENT ---
+# --- 6. MOTEUR ---
 def run_crew(ticker_symbol):
     
-    # --- LA CORRECTION EST ICI ---
-    # Au lieu d'utiliser ChatGroq via LangChain, on utilise le LLM natif de CrewAI.
-    # Le préfixe "groq/" force CrewAI à utiliser le bon fournisseur.
+    # --- FIX LITELLM ---
+    # On injecte la clé directement dans l'environnement pour que LiteLLM la trouve
+    os.environ["GROQ_API_KEY"] = api_key
+    
+    # Définition du LLM via LiteLLM (syntaxe groq/modele)
     my_llm = LLM(
         model="groq/llama3-70b-8192",
-        api_key=api_key,
         temperature=0.5
     )
 
@@ -75,7 +68,7 @@ def run_crew(ticker_symbol):
         backstory="Expert comptable rigoureux.",
         verbose=True,
         allow_delegation=False,
-        llm=my_llm,  # On lui donne le LLM natif
+        llm=my_llm,
         tools=[analyse_bourse_tool]
     )
 
@@ -85,7 +78,7 @@ def run_crew(ticker_symbol):
         backstory="Expert réseaux sociaux (X, Reddit).",
         verbose=True,
         allow_delegation=False,
-        llm=my_llm, # On lui donne le LLM natif
+        llm=my_llm,
         tools=[recherche_web_tool]
     )
 
@@ -109,12 +102,12 @@ def run_crew(ticker_symbol):
         context=[task_finance, task_sentiment]
     )
 
-    # Lancement de l'équipe
+    # Crew
     crew = Crew(
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
         process=Process.sequential,
-        memory=False, # Toujours désactivé pour éviter l'appel OpenAI
+        memory=False, 
         verbose=True
     )
 
