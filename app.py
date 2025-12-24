@@ -1,26 +1,22 @@
 import streamlit as st
 import os
+import time
 
 # --- 1. CONFIGURATION SYSTÈME ---
-# Désactive la télémétrie pour éviter les erreurs de threads
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
-# Force une fausse clé OpenAI pour empêcher CrewAI de la chercher
 os.environ["OPENAI_API_KEY"] = "NA"
 
 # --- 2. IMPORTS ---
 import yfinance as yf
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
-from langchain_community.tools import DuckDuckGoSearchRun
+# On importe directement la classe de base pour éviter les erreurs de wrapper
+from duckduckgo_search import DDGS
 
 # --- 3. INTERFACE STREAMLIT ---
-st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈", layout="wide")
-
-st.title("📈 Assistant PEA Intelligent (Llama 3.3)")
-st.markdown("""
-Cet agent utilise le tout dernier modèle **Llama 3.3 70B** via Groq (Gratuit).
-Il analyse les données financières (Yahoo) et le sentiment social (Web).
-""")
+st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
+st.title("📈 Assistant PEA (Modèle Rapide)")
+st.markdown("Analyse financière & Sentiment social - **Optimisé pour Groq Free Tier**")
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
@@ -28,7 +24,6 @@ with st.sidebar:
     api_key = st.text_input("Ta clé API Groq", type="password")
     if not api_key:
         st.warning("Entre ta clé pour démarrer.")
-        st.markdown("[Obtenir une clé Groq ici](https://console.groq.com/keys)")
 
 # --- 5. DÉFINITION DES OUTILS ---
 
@@ -36,16 +31,23 @@ with st.sidebar:
 def recherche_web_tool(query: str):
     """
     Recherche sur internet (X, Reddit, News).
-    Utile pour connaître le sentiment du marché.
     """
-    search = DuckDuckGoSearchRun()
-    return search.run(query)
+    try:
+        # On utilise directement la librairie sous-jacente pour être plus robuste
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=4))
+            if not results:
+                return "Aucun résultat trouvé."
+            # On formate proprement les résultats
+            formatted_results = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+            return formatted_results
+    except Exception as e:
+        return f"Erreur de recherche : {e}"
 
 @tool("Outil Analyse Boursiere")
 def analyse_bourse_tool(ticker: str):
     """
     Récupère les données boursières Yahoo Finance.
-    Input: Ticker (ex: 'TTE.PA').
     """
     try:
         stock = yf.Ticker(ticker)
@@ -54,10 +56,9 @@ def analyse_bourse_tool(ticker: str):
         data = {
             "Entreprise": info.get('longName', ticker),
             "Prix Actuel": info.get('currentPrice', 'N/A'),
-            "PER (Price/Earnings)": info.get('forwardPE', 'N/A'),
+            "PER": info.get('forwardPE', 'N/A'),
             "Dividende (%)": (info.get('dividendYield', 0) or 0) * 100,
-            "Recommandation Analystes": info.get('recommendationKey', 'Inconnue'),
-            "Secteur": info.get('sector', 'N/A')
+            "Recommandation": info.get('recommendationKey', 'Inconnue')
         }
         return str(data)
     except Exception as e:
@@ -66,32 +67,31 @@ def analyse_bourse_tool(ticker: str):
 # --- 6. MOTEUR DE L'AGENT ---
 def run_crew(ticker_symbol):
     
-    # Injection de la clé pour LiteLLM
     os.environ["GROQ_API_KEY"] = api_key
     
-    # --- LE NOUVEAU CERVEAU ---
-    # On utilise le modèle Llama 3.3 (Le plus performant actuellement)
+    # --- CHANGEMENT DE MODÈLE (CRUCIAL) ---
+    # On utilise le modèle 8B (8 milliards de paramètres).
+    # Il est beaucoup plus léger et évite l'erreur "Rate Limit".
     my_llm = LLM(
-        model="groq/llama-3.3-70b-versatile",
-        temperature=0.5
+        model="groq/llama-3.1-8b-instant",
+        temperature=0.3
     )
 
-    # Agent 1 : Analyste Financier
+    # Agents
     analyste = Agent(
-        role='Analyste Financier Senior',
-        goal='Analyser la santé financière et la rentabilité',
-        backstory="Expert comptable rigoureux, obsédé par les dividendes et le PER.",
+        role='Analyste Financier',
+        goal='Synthétiser les données financières',
+        backstory="Expert comptable factuel.",
         verbose=True,
         allow_delegation=False,
         llm=my_llm,
         tools=[analyse_bourse_tool]
     )
 
-    # Agent 2 : Trader Sentiment
     trader = Agent(
-        role='Analyste Sentiment de Marché',
-        goal='Sonder l\'opinion publique sur le Web',
-        backstory="Expert des réseaux sociaux, capable de détecter la peur ou l'euphorie.",
+        role='Analyste Sentiment',
+        goal='Trouver le sentiment sur le web',
+        backstory="Expert réseaux sociaux.",
         verbose=True,
         allow_delegation=False,
         llm=my_llm,
@@ -100,25 +100,25 @@ def run_crew(ticker_symbol):
 
     # Tâches
     task_finance = Task(
-        description=f"Analyse les fondamentaux de {ticker_symbol} (Prix, PER, Dividende). Est-ce une action solide ?",
-        expected_output="Synthèse des chiffres clés.",
+        description=f"Donne les chiffres clés (Prix, PER, Dividende) pour {ticker_symbol}.",
+        expected_output="Synthèse des chiffres.",
         agent=analyste
     )
 
     task_sentiment = Task(
-        description=f"Recherche 'site:twitter.com {ticker_symbol}' et 'site:reddit.com {ticker_symbol} avis'. Quelle est l'ambiance ?",
-        expected_output="Synthèse du sentiment social.",
+        description=f"Cherche sur le web ce qu'on dit de {ticker_symbol} (Twitter/Reddit).",
+        expected_output="Résumé du sentiment (Positif/Négatif).",
         agent=trader
     )
 
     task_synthese = Task(
-        description=f"En te basant sur les chiffres et le sentiment, rédige une recommandation finale pour {ticker_symbol} (PEA). Argumente.",
-        expected_output="Rapport final complet en markdown.",
+        description=f"Conclusion pour {ticker_symbol} (PEA). Achat ou pas ? Sois bref.",
+        expected_output="Conseil final court.",
         agent=analyste,
         context=[task_finance, task_sentiment]
     )
 
-    # Équipe (Mémoire désactivée pour vitesse & gratuité)
+    # Crew
     crew = Crew(
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
@@ -130,21 +130,19 @@ def run_crew(ticker_symbol):
     return crew.kickoff()
 
 # --- 7. EXÉCUTION ---
-ticker_input = st.text_input("Symbole de l'action (ex: TTE.PA, MC.PA)", "TTE.PA")
+ticker_input = st.text_input("Symbole de l'action (ex: TTE.PA)", "TTE.PA")
 
 if st.button("Lancer l'Analyse 🚀"):
     if not api_key:
-        st.error("⚠️ Clé API manquante ! Regarde dans la colonne de gauche.")
+        st.error("⚠️ Clé API manquante !")
     else:
-        with st.status("🚀 Les agents Llama 3.3 travaillent...", expanded=True) as status:
+        with st.status("Analyse en cours (Mode Rapide)...", expanded=True) as status:
             try:
-                st.write("🔍 Récupération des données...")
+                st.write("🧠 Agents activés...")
                 resultat = run_crew(ticker_input)
-                status.update(label="✅ Terminé !", state="complete", expanded=False)
-                
-                st.divider()
-                st.markdown("### 📊 Rapport Final")
+                status.update(label="Terminé !", state="complete", expanded=False)
+                st.markdown("### 📊 Résultat")
                 st.markdown(resultat)
             except Exception as e:
                 st.error(f"Une erreur est survenue : {e}")
-                status.update(label="❌ Erreur", state="error")
+                status.update(label="Erreur", state="error")
