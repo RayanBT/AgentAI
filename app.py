@@ -9,30 +9,22 @@ from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from duckduckgo_search import DDGS
 
-# --- 1. CONFIGURATION & STYLE ---
+# --- 1. CONFIGURATION ---
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 os.environ["OPENAI_API_KEY"] = "NA"
 
-st.set_page_config(page_title="AI Financial Analyst", page_icon="💎", layout="wide")
+st.set_page_config(page_title="AI Financial Analyst", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    div[data-testid="stMetric"] {
-        background-color: #1a1a1a;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 10px;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #00ADB5;
-    }
+    div[data-testid="stMetric"] { background-color: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 10px; }
+    .stProgress > div > div > div > div { background-color: #00ADB5; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. STRATÉGIES & LISTES DE SECOURS ---
-# Si le stratège échoue, on utilise ces listes par défaut pour ne pas bloquer l'utilisateur
+# --- 2. LISTES DE SECOURS (Plan B immédiat) ---
 FALLBACK_LISTS = {
     "💎 Small Caps (Pépites FR)": ["VLA.PA", "ATO.PA", "SESL.PA", "BEN.PA"],
     "🚀 Tech & Green Growth": ["SOIT.PA", "AI.PA", "DSY.PA", "STM.PA"],
@@ -40,61 +32,56 @@ FALLBACK_LISTS = {
     "🔥 Market Momentum": ["MC.PA", "RMS.PA", "OR.PA", "AIR.PA"]
 }
 
-HUNTING_STRATEGIES = {k: v for k, v in [
-    ("💎 Small Caps (Pépites FR)", "Trouve 4 actions françaises (PEA) small/mid caps sous-évaluées hors CAC40."),
-    ("🚀 Tech & Green Growth", "Trouve 4 actions européennes (PEA) Tech ou Énergie Verte en forte croissance."),
-    ("🛡️ Rendement Aristocrats", "Trouve 4 actions françaises solides avec dividende >5% et stable."),
-    ("🔥 Market Momentum", "Trouve 4 actions PEA qui buzzent positivement cette semaine.")
-]}
+HUNTING_STRATEGIES = {
+    "💎 Small Caps (Pépites FR)": "Trouve 4 actions françaises small/mid caps PEA hors CAC40.",
+    "🚀 Tech & Green Growth": "Trouve 4 actions européennes PEA Tech/Green en croissance.",
+    "🛡️ Rendement Aristocrats": "Trouve 4 actions françaises PEA avec gros dividende stable.",
+    "🔥 Market Momentum": "Trouve 4 actions PEA populaires cette semaine."
+}
 
-# --- 3. FILTRE OPTIMISÉ (On garde le bon, on jette l'image) ---
+# --- 3. FILTRE MODÈLES ---
 @st.cache_data(show_spinner=False)
 def get_active_models(api_key):
     try:
         genai.configure(api_key=api_key)
         models = list(genai.list_models())
         valid = []
-        
-        # ON BANNI L'IMAGE ET L'AUDIO, MAIS ON GARDE "EXP" (Gemini 2.0 est souvent en Exp)
         BANNED = ['tts', 'vision', 'embedding', 'geek', 'gecko', 'image', 'banana', 'nano']
-        
         for m in models:
             if 'generateContent' not in m.supported_generation_methods: continue
             if any(b in m.name.lower() for b in BANNED): continue
             valid.append(m.name)
-            
-        # TRI PAR INTELLIGENCE
-        # On met Gemini 2.0 ou 1.5 Pro en premier pour la stratégie, car il faut être malin
-        return sorted(valid, key=lambda x: (
-            0 if "gemini-2.0-flash" in x else 
-            1 if "gemini-1.5-flash" in x else 
-            2 if "pro" in x else 3
-        ))
+        return sorted(valid, key=lambda x: (0 if "gemini-1.5-flash" in x and "8b" not in x else 1 if "gemini-2.0-flash" in x else 2))
     except: return []
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
-    st.markdown("### 💎 AI Analyst Pro")
+    st.markdown("### ⚡ AI Analyst Commando")
     api_key = st.text_input("Clé API Google", type="password")
-    
     crew_models = []
     if api_key:
         models = get_active_models(api_key)
         if models:
             st.success(f"🟢 {len(models)} Modèles Prêts")
             crew_models = [m.replace("models/", "gemini/") for m in models]
-        else:
-            st.error("Aucun modèle valide.")
+        else: st.error("Aucun modèle valide.")
 
-# --- 5. OUTILS ---
+# --- 5. OUTILS OPTIMISÉS ---
 @tool("Recherche Web")
 def recherche_web_tool(query: str):
-    """Recherche Web."""
+    """Recherche Web précise."""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3)) # Un peu plus de résultats pour la stratégie
-            return "\n".join([f"- {r['body']}" for r in results]) if results else "Rien."
-    except: return "Erreur."
+            # On demande plus de résultats mais on filtre les déchets
+            results = list(ddgs.text(query, max_results=4))
+            clean_results = []
+            for r in results:
+                # Filtre anti-dictionnaire/pub
+                if "dictionary" in r['title'].lower() or "auction" in r['body'].lower(): continue
+                clean_results.append(f"- {r['body']}")
+            
+            return "\n".join(clean_results[:2]) if clean_results else "Pas d'info pertinente."
+    except: return "Erreur recherche."
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
@@ -102,13 +89,13 @@ def analyse_bourse_tool(ticker: str):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        price = info.get('currentPrice') or info.get('regularMarketPrice') or 0.0
-        per = info.get('forwardPE') or info.get('trailingPE') or 0.0
-        div = (info.get('dividendYield', 0) or 0) * 100
-        return str({"Prix": round(price, 2), "PER": round(per, 2), "Div": round(div, 2)})
+        p = info.get('currentPrice') or info.get('regularMarketPrice') or 0.0
+        r = info.get('forwardPE') or info.get('trailingPE') or 0.0
+        d = (info.get('dividendYield', 0) or 0) * 100
+        return str({"Prix": round(p, 2), "PER": round(r, 2), "Div": round(d, 2)})
     except: return str({"Prix": 0, "PER": 0, "Div": 0})
 
-# --- 6. MOTEUR ROBUSTE ---
+# --- 6. MOTEUR RAPIDE (MAX ITERATIONS) ---
 def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, context=""):
     os.environ["GOOGLE_API_KEY"] = api_key
     os.environ["GEMINI_API_KEY"] = api_key
@@ -121,12 +108,25 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
         for model_name in model_list:
             clean_name = model_name.replace("gemini/", "")
             try:
-                log_func(f"⚡ {clean_name} travaille...", "running")
+                log_func(f"⚡ {clean_name}...", "running")
                 my_llm = LLM(model=model_name, api_key=api_key, temperature=0.1)
-                agent = Agent(role=role, goal="Expertise", backstory="Pro.", verbose=True, allow_delegation=False, llm=my_llm, tools=tools, max_rpm=10)
+                
+                # --- OPTIMISATION MAJEURE : MAX_ITER=2 ---
+                # L'agent n'a le droit qu'à 2 essais. S'il échoue, il arrête de boucler.
+                agent = Agent(
+                    role=role, 
+                    goal="Réponse immédiate.", 
+                    backstory="Tu vas droit au but. Pas de bla-bla.", 
+                    verbose=True, 
+                    allow_delegation=False, 
+                    llm=my_llm, 
+                    tools=tools, 
+                    max_rpm=100,
+                    max_iter=2 # <--- ICI : On empêche les boucles infinies
+                )
                 
                 desc = task_desc + (f"\nCONTEXTE:\n{context}" if context else "")
-                task = Task(description=desc, expected_output="Réponse directe.", agent=agent)
+                task = Task(description=desc, expected_output="Très court.", agent=agent)
                 
                 crew = Crew(agents=[agent], tasks=[task], verbose=True)
                 result = crew.kickoff()
@@ -137,10 +137,9 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
                 err = str(e)
                 if "429" in err or "Quota" in err:
                     match = re.search(r"retry in (\d+\.?\d*)s", err)
-                    wait = float(match.group(1)) if match else 30.0
+                    wait = float(match.group(1)) if match else 20.0
                     retry_delays.append(wait)
-                    log_func(f"⚠️ {clean_name} vide. (Reset {int(wait)}s)", "warning")
-                    time.sleep(1)
+                    log_func(f"⚠️ {clean_name} vide.", "warning")
                     continue
                 if "404" in err or "400" in err: continue
         
@@ -148,60 +147,50 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
         
         if current_retry < max_retries:
             wait_time = min(retry_delays) + 2
-            # Animation d'attente
-            alert = st.empty()
-            prog = st.progress(0)
+            # Animation rapide
             for i in range(int(wait_time), 0, -1):
-                alert.warning(f"⏳ Recharge Quotas Google... Reprise dans {i}s")
-                prog.progress(1.0 - (i/wait_time))
+                log_func(f"⏳ Attente Quota ({i}s)...", "error")
                 time.sleep(1)
-            alert.empty()
-            prog.empty()
-            log_func("🔄 Reprise...", "info")
             current_retry += 1
         else: return None
 
-# --- 7. LOGIQUE DE CHASSE (C'est ici que j'ai tout réparé) ---
+# --- 7. LOGIQUE MÉTIER ---
 def hunt_tickers(strategy_name, strategy_prompt, status_func):
-    status_func(f"🧠 Le Stratège analyse : {strategy_name}...", "running")
+    status_func(f"🧠 Recherche rapide : {strategy_name}...", "running")
     
+    # PROMPT ENFANTIN ET STRICT
     prompt = f"""
-    Tu es un expert financier.
-    Mission : {strategy_prompt}
-    Trouve 4 tickers Yahoo Finance (ex: AIR.PA) correspondant à la demande.
-    IMPORTANT : Ta réponse doit contenir les tickers. Peu importe le texte autour, je veux voir les tickers.
+    Trouve 4 symboles boursiers (Tickers Yahoo) pour : {strategy_prompt}
+    RÈGLES STRICTES :
+    1. Réponds JUSTE la liste séparée par des virgules.
+    2. Exemple : TTE.PA, AIR.PA, BNP.PA
+    3. PAS DE PHRASES. PAS D'EXPLICATION.
+    4. Si tu ne trouves pas, invente rien.
     """
     
-    # On essaie de faire travailler l'IA
     res = execute_step_smart("Stratège", prompt, "Stratège", [recherche_web_tool], crew_models, lambda m,s: None)
     
     tickers = []
     if res:
-        # --- EXTRACTION CHIRURGICALE PAR REGEX ---
-        # Cherche tout ce qui ressemble à XXX.PA, XXX.DE, XXX.AS
+        # Extraction brutale
         found = re.findall(r'\b[A-Z0-9]{2,5}\.[A-Z]{2,3}\b', res.upper())
-        tickers = list(set(found))[:4] # On dédoublonne et on garde 4
+        tickers = list(set(found))[:4]
     
-    # --- FILET DE SÉCURITÉ ---
+    # PLAN B IMMÉDIAT (Si l'IA échoue ou prend trop de temps, on injecte la liste manuelle)
     if not tickers:
-        status_func("⚠️ Recherche web difficile, utilisation de la liste de secours...", "warning")
-        time.sleep(2)
+        status_func("⚠️ IA confuse, activation liste de secours ultra-rapide...", "warning")
+        time.sleep(1)
         tickers = FALLBACK_LISTS.get(strategy_name, ["TTE.PA", "AIR.PA", "BNP.PA", "SAN.PA"])
     
     return tickers
 
 def parse_finance_data(fin_str):
-    """Parsing robuste."""
     try:
         clean_str = fin_str.replace("'", "").replace('"', '').replace(":", " ")
-        match_prix = re.search(r"(?:Prix|Price)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
-        match_per = re.search(r"(?:PER|P/E)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
-        match_div = re.search(r"(?:Div|Yield)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
-        return {
-            "Prix": float(match_prix.group(1)) if match_prix else 0.0,
-            "PER": float(match_per.group(1)) if match_per else 0.0,
-            "Div": float(match_div.group(1)) if match_div else 0.0
-        }
+        p = float(re.search(r"(?:Prix|Price)[\s]+([\d\.]+)", clean_str, re.IGNORECASE).group(1)) if re.search(r"(?:Prix|Price)", clean_str, re.IGNORECASE) else 0.0
+        r = float(re.search(r"(?:PER|P/E)[\s]+([\d\.]+)", clean_str, re.IGNORECASE).group(1)) if re.search(r"(?:PER|P/E)", clean_str, re.IGNORECASE) else 0.0
+        d = float(re.search(r"(?:Div|Yield)[\s]+([\d\.]+)", clean_str, re.IGNORECASE).group(1)) if re.search(r"(?:Div|Yield)", clean_str, re.IGNORECASE) else 0.0
+        return {"Prix": p, "PER": r, "Div": d}
     except: return {"Prix": 0.0, "PER": 0.0, "Div": 0.0}
 
 def analyze_one_stock(ticker, update_status_func):
@@ -209,20 +198,20 @@ def analyze_one_stock(ticker, update_status_func):
     dossier = ""
     def log_wrapper(msg, state): update_status_func(msg, state)
 
-    # 1. Finance
-    prompt_fin = f"Donne Prix, PER, Div pour {ticker}. Format strict: 'Prix: X, PER: Y, Div: Z'"
+    # 1. Finance (Prompt JSON strict)
+    prompt_fin = f"Pour {ticker}, donne moi le JSON : {{'Prix': 0.0, 'PER': 0.0, 'Div': 0.0}}. Trouve les vrais chiffres."
     res_fin = execute_step_smart("Finance", prompt_fin, "Analyste", [analyse_bourse_tool], crew_models, log_wrapper)
     if not res_fin: return None
     fin_data = parse_finance_data(res_fin)
     dossier += f"FINANCE: {res_fin}\n"
     
     # 2. Sentiment
-    res_soc = execute_step_smart("Sentiment", f"Avis web sur {ticker}.", "Trader", [recherche_web_tool], crew_models, log_wrapper)
-    if not res_soc: res_soc = "Neutre"
+    res_soc = execute_step_smart("Sentiment", f"Donne moi l'avis web sur {ticker} en 1 phrase.", "Trader", [recherche_web_tool], crew_models, log_wrapper)
+    if not res_soc: res_soc = "Pas d'info"
     dossier += f"SENTIMENT: {res_soc}\n"
     
     # 3. Verdict
-    res_con = execute_step_smart("Notation", f"Dossier {ticker}. Note /10 et avis court (ACHAT/VENTE).", "Conseiller", [], crew_models, log_wrapper, dossier)
+    res_con = execute_step_smart("Notation", f"Lis le dossier {ticker}. Note /10 et dis ACHAT ou VENTE ou ATTENTE. 1 phrase max.", "Conseiller", [], crew_models, log_wrapper, dossier)
     
     score = 0
     match = re.search(r"(\d+)/10", str(res_con))
@@ -235,14 +224,14 @@ def analyze_one_stock(ticker, update_status_func):
     return {"Ticker": ticker, "Data": fin_data, "Score": score, "Rec": rec, "Avis": res_con}
 
 # --- 8. INTERFACE ---
-st.markdown("## 💎 AI Financial Analyst <span style='font-size:0.6em; color:gray'>Pro</span>", unsafe_allow_html=True)
-tab_solo, tab_radar = st.tabs(["🔍 Analyse Focus", "📡 Radar de Marché"])
+st.markdown("## ⚡ AI Financial Analyst <span style='font-size:0.6em; color:gray'>Turbo</span>", unsafe_allow_html=True)
+tab_solo, tab_radar = st.tabs(["🔍 Analyse", "📡 Radar"])
 
 with tab_solo:
     c1, c2 = st.columns([3, 1])
     ticker_in = c1.text_input("Symbole", "TTE.PA", label_visibility="collapsed")
-    if c2.button("Analyser", key="btn_s") and api_key:
-        with st.status("Analyse en cours...", expanded=True) as status:
+    if c2.button("GO", key="btn_s") and api_key:
+        with st.status("Traitement...", expanded=True) as status:
             log_spot = st.empty()
             res = analyze_one_stock(ticker_in, lambda m,t: log_spot.info(m) if t=="running" else log_spot.success(m) if t=="success" else log_spot.warning(m))
             if res:
@@ -262,7 +251,7 @@ with tab_radar:
     c_s, c_b = st.columns([3, 1])
     strat_key = c_s.selectbox("Stratégie", list(HUNTING_STRATEGIES.keys()), label_visibility="collapsed")
     
-    if c_b.button("Scanner", key="btn_r") and api_key:
+    if c_b.button("SCAN", key="btn_r") and api_key:
         st.markdown("---")
         radar_stat = st.empty()
         radar_bar = st.progress(0)
@@ -270,17 +259,13 @@ with tab_radar:
         
         def r_log(m, t): radar_stat.caption(f"📡 {m}")
         
-        # 1. CHASSE AVEC FALLBACK
         tickers = hunt_tickers(strat_key, HUNTING_STRATEGIES[strat_key], r_log)
         
         radar_stat.markdown(f"**Cibles:** `{'` `'.join(tickers)}`")
         data = []
         
         for i, t in enumerate(tickers):
-            if i > 0:
-                r_log(f"Pause tactique (3s) avant {t}...", "running")
-                time.sleep(3)
-            
+            if i > 0: time.sleep(2) # Petite pause tactique
             res = analyze_one_stock(t, r_log)
             if res:
                 data.append({
@@ -292,7 +277,6 @@ with tab_radar:
                     "Rendement": f"{res['Data']['Div']:.1f}%",
                     "Résumé": res['Avis']
                 })
-                
                 df = pd.DataFrame(data).sort_values(by="Score", ascending=False)
                 table_spot.dataframe(
                     df, 
