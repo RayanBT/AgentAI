@@ -1,136 +1,123 @@
 import streamlit as st
 import os
-import yfinance as yf
+import google.generativeai as genai
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from duckduckgo_search import DDGS
+import yfinance as yf
 
-# --- 1. CONFIGURATION ---
+# --- CONFIGURATION ---
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
-os.environ["OPENAI_API_KEY"] = "NA" # Bloque OpenAI
+os.environ["OPENAI_API_KEY"] = "NA"
 
-# --- 2. INTERFACE ---
-st.set_page_config(page_title="Agent PEA Gemini", page_icon="💎", layout="wide")
-st.title("💎 Assistant PEA (Gemini Pro)")
-st.markdown("Analyse financière & Sentiment social")
+st.set_page_config(page_title="Diagnostic Gemini", page_icon="🔧")
 
-# --- 3. SIDEBAR ---
+st.title("🔧 Diagnostic & Assistant PEA")
+st.markdown("Ce mode permet de trouver le bon modèle Gemini compatible avec ta clé.")
+
+# --- SIDEBAR & DIAGNOSTIC ---
 with st.sidebar:
-    st.header("🔑 Configuration")
-    api_key = st.text_input("Ta clé Google API (AIza...)", type="password")
-    if not api_key:
-        st.warning("Entre ta clé.")
+    st.header("1. Clé API")
+    api_key = st.text_input("Ta clé Google AIza...", type="password")
+    
+    selected_model_name = None
+    
+    if api_key:
+        try:
+            # On configure le SDK Google directement
+            genai.configure(api_key=api_key)
+            
+            # On demande la liste des modèles
+            st.success("Clé détectée ! Recherche des modèles...")
+            models = list(genai.list_models())
+            
+            # On filtre pour ne garder que ceux qui génèrent du texte (gemini)
+            gemini_models = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
+            
+            if gemini_models:
+                st.header("2. Choisis ton Modèle")
+                # L'utilisateur choisit le modèle dans la liste réelle
+                selected_model_name = st.selectbox(
+                    "Modèles disponibles pour ta clé :", 
+                    gemini_models,
+                    index=0
+                )
+                # On nettoie le nom (Google renvoie 'models/gemini-pro', CrewAI veut 'gemini/gemini-pro')
+                clean_name = selected_model_name.replace("models/", "")
+                st.info(f"Modèle sélectionné : {clean_name}")
+            else:
+                st.error("Aucun modèle Gemini trouvé pour cette clé.")
+                
+        except Exception as e:
+            st.error(f"Erreur de connexion Google : {e}")
 
-# --- 4. OUTILS ---
-
+# --- OUTILS ---
 @tool("Recherche Web")
 def recherche_web_tool(query: str):
-    """Recherche sur internet (News, Sentiment)."""
+    """Recherche Web."""
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=3))
-            if not results: return "Pas de résultat."
+            if not results: return "Rien trouvé."
             return "\n".join([f"- {r['body']}" for r in results])
-    except Exception as e:
-        return "Erreur recherche."
+    except: return "Erreur recherche."
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
-    """Données financières."""
+    """Données Bourse."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        data = {
-            "Nom": info.get('longName', ticker),
-            "Prix": info.get('currentPrice', 'N/A'),
-            "PER": info.get('forwardPE', 'N/A'),
-            "Div": (info.get('dividendYield', 0) or 0) * 100,
-            "Avis": info.get('recommendationKey', 'Inconnue')
-        }
-        return str(data)
-    except Exception:
-        return "Erreur données."
+        return str({
+            "Nom": info.get('longName'),
+            "Prix": info.get('currentPrice'),
+            "PER": info.get('forwardPE'),
+            "Div": info.get('dividendYield')
+        })
+    except: return "Erreur Yahoo."
 
-# --- 5. MOTEUR ---
-def run_crew(ticker_symbol):
-    
+# --- MOTEUR ---
+def run_crew(ticker, model_name):
     # Injection des clés
     os.environ["GEMINI_API_KEY"] = api_key
     os.environ["GOOGLE_API_KEY"] = api_key
     
-    # --- CHANGEMENT ICI : Modèle plus standard ---
+    # On utilise le modèle choisi dynamiquement
+    # Note : CrewAI attend 'gemini/nom-du-modele'
+    full_model_name = f"gemini/{model_name}"
+    
     my_llm = LLM(
-        model="gemini/gemini-pro", # On revient au standard absolu
+        model=full_model_name,
         api_key=api_key,
         temperature=0.3
     )
 
-    # Agents
     analyste = Agent(
-        role='Analyste',
-        goal='Chiffres clés',
-        backstory="Expert comptable.",
-        verbose=True,
-        allow_delegation=False,
-        llm=my_llm,
-        tools=[analyse_bourse_tool]
+        role='Analyste', goal='Chiffres', backstory='Expert.',
+        allow_delegation=False, verbose=True, llm=my_llm, tools=[analyse_bourse_tool]
     )
-
     trader = Agent(
-        role='Trader',
-        goal='Sentiment web',
-        backstory="Expert réseaux.",
-        verbose=True,
-        allow_delegation=False,
-        llm=my_llm,
-        tools=[recherche_web_tool]
+        role='Trader', goal='Sentiment', backstory='Expert.',
+        allow_delegation=False, verbose=True, llm=my_llm, tools=[recherche_web_tool]
     )
+    
+    task1 = Task(description=f"Donne les chiffres de {ticker}.", expected_output="Chiffres.", agent=analyste)
+    task2 = Task(description=f"Donne le sentiment sur {ticker}.", expected_output="Sentiment.", agent=trader)
+    task3 = Task(description=f"Avis final PEA pour {ticker}.", expected_output="Avis.", agent=analyste, context=[task1, task2])
 
-    # Tâches
-    task_finance = Task(
-        description=f"Donne les chiffres (Prix, PER, Dividende) de {ticker_symbol}.",
-        expected_output="Synthèse financière.",
-        agent=analyste
-    )
-
-    task_sentiment = Task(
-        description=f"Cherche l'avis sur {ticker_symbol} (Web/Reddit).",
-        expected_output="Synthèse sentiment.",
-        agent=trader
-    )
-
-    task_synthese = Task(
-        description=f"Conclusion PEA pour {ticker_symbol}. Achat/Vente ? Court.",
-        expected_output="Rapport final.",
-        agent=analyste,
-        context=[task_finance, task_sentiment]
-    )
-
-    # Crew
-    crew = Crew(
-        agents=[analyste, trader],
-        tasks=[task_finance, task_sentiment, task_synthese],
-        process=Process.sequential,
-        memory=False,
-        verbose=True
-    )
-
+    crew = Crew(agents=[analyste, trader], tasks=[task1, task2, task3], process=Process.sequential, verbose=True)
     return crew.kickoff()
 
-# --- 6. EXÉCUTION ---
-ticker_input = st.text_input("Action (ex: TTE.PA)", "TTE.PA")
-
-if st.button("Lancer 🚀"):
-    if not api_key:
-        st.error("Clé manquante !")
-    else:
-        with st.status("Gemini travaille...", expanded=True) as status:
+# --- MAIN ---
+if selected_model_name:
+    st.divider()
+    ticker = st.text_input("Action", "TTE.PA")
+    if st.button("Lancer l'analyse"):
+        with st.status("Travail en cours..."):
             try:
-                st.write("💎 Initialisation...")
-                resultat = run_crew(ticker_input)
-                status.update(label="✅ Terminé !", state="complete", expanded=False)
-                st.markdown("### 📊 Résultat")
-                st.markdown(resultat)
+                # On passe le nom nettoyé (ex: gemini-1.5-flash)
+                clean_name = selected_model_name.replace("models/", "")
+                res = run_crew(ticker, clean_name)
+                st.markdown(res)
             except Exception as e:
-                st.error(f"Une erreur est survenue : {e}")
-                status.update(label="Erreur", state="error")
+                st.error(f"Erreur : {e}")

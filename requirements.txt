@@ -10,3 +10,4 @@ streamlit
 fastapi
 uvicorn
 apscheduler
+google-generativeai
