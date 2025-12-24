@@ -6,15 +6,16 @@ os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
 import yfinance as yf
 
-# 1. IMPORTS CREWAI
+# 1. IMPORTS CREWAI (Uniquement pour les Agents/Tasks)
 from crewai import Agent, Task, Crew, Process
-# On n'importe QUE 'tool' d'ici. On laisse tomber DuckDuckGoSearchTool qui est buggé.
-from crewai_tools import tool 
 
-# 2. IMPORTS LANGCHAIN & GROQ
-from langchain_groq import ChatGroq
-# On utilise le moteur de recherche de LangChain (plus stable)
+# 2. IMPORTS LANGCHAIN (C'est ici la solution stable !)
+# On prend le décorateur @tool directement chez LangChain
+from langchain.tools import tool
+# On prend le moteur de recherche chez LangChain Community
 from langchain_community.tools import DuckDuckGoSearchRun
+
+from langchain_groq import ChatGroq
 
 # --- CONFIGURATION PAGE ---
 st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
@@ -33,16 +34,17 @@ def run_analysis(ticker):
     os.environ["GROQ_API_KEY"] = api_key
     llm = ChatGroq(model="llama3-70b-8192", temperature=0.5)
 
-    # --- CRÉATION DES OUTILS "FAITS MAISON" ---
+    # --- CRÉATION DES OUTILS ---
 
-    # 1. Outil de Recherche (Remplacement manuel de l'outil buggé)
+    # 1. Outil de Recherche (Via LangChain)
     @tool("Outil Recherche Web")
     def custom_search_tool(query: str):
         """Utilise ce moteur pour chercher des actualités, des avis sur X/Reddit."""
+        # On initialise le moteur DuckDuckGo
         search_engine = DuckDuckGoSearchRun()
         return search_engine.run(query)
 
-    # 2. Outil Bourse
+    # 2. Outil Bourse (Via LangChain aussi)
     @tool("Outil Analyse Boursiere")
     def stock_analysis_tool(ticker_symbol: str):
         """Récupère les données financières (Prix, PER, Dividende)."""

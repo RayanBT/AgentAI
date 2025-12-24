@@ -1,5 +1,5 @@
-crewai==1.7.2
-crewai-tools==1.7.2
+crewai
+crewai-tools
 langchain_groq
 langchain_community
 duckduckgo-search
