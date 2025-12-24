@@ -1,128 +1,78 @@
 import streamlit as st
 import os
-import time
-import google.generativeai as genai  # Pour scanner les modèles
-import yfinance as yf
-from crewai import Agent, Task, Crew, Process, LLM
-from crewai.tools import tool
-from duckduckgo_search import DDGS
+import google.generativeai as genai
 
-# --- 1. CONFIGURATION SYSTEME ---
+# --- CONFIGURATION ---
+# On désactive la télémétrie pour nettoyer les logs
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 os.environ["OPENAI_API_KEY"] = "NA"
 
-# --- 2. INTERFACE ---
-st.set_page_config(page_title="Agent PEA Sélecteur", page_icon="🎛️", layout="wide")
-st.title("🎛️ Assistant PEA (Sélecteur de Modèle)")
-st.markdown("Analyse financière & Sentiment - **Choisis ton modèle Gemini**")
+st.set_page_config(page_title="Diagnostic Gemini", page_icon="🕵️", layout="centered")
 
-# --- 3. SIDEBAR INTELLIGENTE ---
-with st.sidebar:
-    st.header("1. Configuration")
-    api_key = st.text_input("Ta clé Google API", type="password")
-    
-    selected_model_string = None
-    
-    if api_key:
-        os.environ["GOOGLE_API_KEY"] = api_key
-        os.environ["GEMINI_API_KEY"] = api_key
+st.title("🕵️ Inspecteur de Modèles Google")
+st.info("Ce script va lister dans la console (logs) tous les modèles auxquels ta clé a accès.")
+
+# --- FONCTION DE DIAGNOSTIC ---
+def scan_and_print_models(api_key):
+    try:
+        # Configuration de l'accès Google
+        genai.configure(api_key=api_key)
         
-        try:
-            # On demande à Google : "Quels modèles j'ai le droit d'utiliser ?"
-            genai.configure(api_key=api_key)
-            models = list(genai.list_models())
-            
-            # On garde ceux qui savent écrire du texte
-            valid_models = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
-            
-            if valid_models:
-                st.success(f"{len(valid_models)} modèles trouvés !")
-                # L'utilisateur choisit ici
-                raw_model_name = st.selectbox(
-                    "2. Choisis un modèle (Prends un 'Flash' ou 'Pro')", 
-                    valid_models,
-                    index=0
-                )
-                # Nettoyage du nom pour CrewAI (on enlève 'models/')
-                selected_model_string = raw_model_name.replace("models/", "")
-                st.info(f"Modèle actif : {selected_model_string}")
+        # Marqueurs visuels pour retrouver facilement les infos dans les logs
+        print("\n\n" + "█"*60)
+        print("█ DEBUT DU SCAN DES MODELES DISPONIBLES")
+        print("█"*60 + "\n")
+        
+        models = list(genai.list_models())
+        text_models_count = 0
+        
+        if not models:
+            print("❌ AUCUN MODÈLE TROUVÉ (La liste est vide).")
+            return False, "Liste vide"
+
+        for m in models:
+            # On cherche les modèles qui savent générer du texte ('generateContent')
+            if 'generateContent' in m.supported_generation_methods:
+                print(f"✅ MODÈLE VALIDE : {m.name}")
+                print(f"   Nom affiché : {m.display_name}")
+                print(f"   Description : {m.description}")
+                print(f"   Méthodes : {m.supported_generation_methods}")
+                print("-" * 40)
+                text_models_count += 1
             else:
-                st.error("Aucun modèle compatible trouvé.")
-                
-        except Exception as e:
-            st.error(f"Erreur de clé : {e}")
+                # On affiche quand même les autres (vision, embedding) pour info
+                print(f"⚠️  MODÈLE NON-TEXTE : {m.name}")
+        
+        print("\n" + "█"*60)
+        print(f"█ FIN DU SCAN : {text_models_count} modèles texte trouvés.")
+        print("█"*60 + "\n\n")
+        
+        return True, text_models_count
+        
+    except Exception as e:
+        print(f"\n❌ ERREUR CRITIQUE : {str(e)}\n")
+        return False, str(e)
 
-# --- 4. OUTILS ---
-@tool("Recherche Web")
-def recherche_web_tool(query: str):
-    """Recherche Web."""
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=2))
-            if not results: return "Rien trouvé."
-            return "\n".join([f"- {r['body']}" for r in results])
-    except: return "Erreur recherche."
+# --- INTERFACE ---
+api_key = st.text_input("Colle ta clé API Google ici (AIza...)", type="password")
 
-@tool("Bourse Yahoo")
-def analyse_bourse_tool(ticker: str):
-    """Données financières."""
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        return str({
-            "Prix": info.get('currentPrice'),
-            "PER": info.get('forwardPE'),
-            "Div": info.get('dividendYield')
-        })
-    except: return "Erreur Yahoo."
-
-# --- 5. MOTEUR ---
-def run_crew(ticker, model_name):
-    
-    # On construit le nom technique pour CrewAI (ex: gemini/gemini-1.5-flash-001)
-    llm_model_name = f"gemini/{model_name}"
-    
-    my_llm = LLM(
-        model=llm_model_name,
-        api_key=api_key,
-        temperature=0.1
-    )
-
-    # Agents (Freinés à 5 RPM pour éviter le quota error)
-    analyste = Agent(
-        role='Analyste', goal='Chiffres', backstory="Expert.",
-        verbose=True, allow_delegation=False, llm=my_llm, tools=[analyse_bourse_tool],
-        max_rpm=5
-    )
-
-    trader = Agent(
-        role='Trader', goal='Sentiment', backstory="Expert.",
-        verbose=True, allow_delegation=False, llm=my_llm, tools=[recherche_web_tool],
-        max_rpm=5
-    )
-
-    task1 = Task(description=f"Chiffres {ticker}.", expected_output="Données.", agent=analyste)
-    task2 = Task(description=f"Avis web {ticker}.", expected_output="Avis.", agent=trader)
-    task3 = Task(description=f"Synthèse PEA {ticker}.", expected_output="Conseil.", agent=analyste, context=[task1, task2])
-
-    crew = Crew(agents=[analyste, trader], tasks=[task1, task2, task3], process=Process.sequential, verbose=True, memory=False)
-    return crew.kickoff()
-
-# --- 6. EXÉCUTION ---
-if selected_model_string:
-    st.divider()
-    ticker = st.text_input("Action", "TTE.PA")
-    
-    if st.button("Lancer l'analyse 🚀"):
-        with st.status("Travail en cours...", expanded=True) as status:
-            try:
-                st.write(f"🤖 Utilisation de : {selected_model_string}")
-                time.sleep(1) # Petite pause sécurité
-                
-                resultat = run_crew(ticker, selected_model_string)
-                
-                status.update(label="Terminé !", state="complete")
-                st.divider()
-                st.markdown(resultat)
-            except Exception as e:
-                st.error(f"Erreur : {e}")
+if st.button("Lancer le Scan des Logs 🚀"):
+    if not api_key:
+        st.error("Il faut une clé API !")
+    else:
+        with st.status("Connexion à Google en cours...", expanded=True) as status:
+            success, count = scan_and_print_models(api_key)
+            
+            if success:
+                status.update(label="Scan terminé !", state="complete")
+                st.success(f"✅ Succès ! {count} modèles compatibles trouvés.")
+                st.markdown("""
+                ### 👉 Action requise :
+                1. Regarde en bas à droite de cette fenêtre.
+                2. Clique sur l'onglet **'Manage App'** pour ouvrir la console noire.
+                3. Copie tout ce qui se trouve entre les barres `█████`.
+                4. Colle-le dans notre discussion.
+                """)
+            else:
+                status.update(label="Erreur", state="error")
+                st.error(f"Erreur technique : {count}")
