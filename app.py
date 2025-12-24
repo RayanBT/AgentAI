@@ -5,100 +5,84 @@ from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from duckduckgo_search import DDGS
 
-# --- 1. CONFIGURATION SYSTÈME (ANTI-CRASH) ---
-# On coupe la télémétrie
+# --- 1. CONFIGURATION ---
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
-# On donne une fausse clé OpenAI pour satisfaire les vérifications initiales
-os.environ["OPENAI_API_KEY"] = "NA"
+os.environ["OPENAI_API_KEY"] = "NA" # Bloque OpenAI
 
-# --- 2. INTERFACE STREAMLIT ---
+# --- 2. INTERFACE ---
 st.set_page_config(page_title="Agent PEA Gemini", page_icon="💎", layout="wide")
-
-st.title("💎 Assistant PEA (Gemini Flash Native)")
-st.markdown("""
-Cet agent utilise **Gemini 1.5 Flash** via le connecteur natif.
-C'est la méthode la plus fiable pour éviter les erreurs OpenAI.
-""")
+st.title("💎 Assistant PEA (Gemini Pro)")
+st.markdown("Analyse financière & Sentiment social")
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.header("🔑 Configuration")
     api_key = st.text_input("Ta clé Google API (AIza...)", type="password")
     if not api_key:
-        st.warning("Entre ta clé pour démarrer.")
-        st.markdown("[Obtenir une clé Google ici](https://aistudio.google.com/app/apikey)")
+        st.warning("Entre ta clé.")
 
-# --- 4. DÉFINITION DES OUTILS (STABLES) ---
+# --- 4. OUTILS ---
 
 @tool("Recherche Web")
 def recherche_web_tool(query: str):
-    """
-    Recherche sur internet (News, Sentiment).
-    """
+    """Recherche sur internet (News, Sentiment)."""
     try:
-        # Utilisation directe de la librairie pour éviter les bugs d'import CrewAI
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=4))
-            if not results:
-                return "Pas de résultat."
-            return "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+            results = list(ddgs.text(query, max_results=3))
+            if not results: return "Pas de résultat."
+            return "\n".join([f"- {r['body']}" for r in results])
     except Exception as e:
-        return f"Erreur recherche : {e}"
+        return "Erreur recherche."
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
-    """
-    Récupère les données financières (Prix, PER, Dividende).
-    """
+    """Données financières."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        
         data = {
             "Nom": info.get('longName', ticker),
             "Prix": info.get('currentPrice', 'N/A'),
             "PER": info.get('forwardPE', 'N/A'),
-            "Dividende (%)": (info.get('dividendYield', 0) or 0) * 100,
-            "Recommandation": info.get('recommendationKey', 'Inconnue')
+            "Div": (info.get('dividendYield', 0) or 0) * 100,
+            "Avis": info.get('recommendationKey', 'Inconnue')
         }
         return str(data)
-    except Exception as e:
-        return f"Erreur Yahoo : {e}"
+    except Exception:
+        return "Erreur données."
 
-# --- 5. MOTEUR DE L'AGENT ---
+# --- 5. MOTEUR ---
 def run_crew(ticker_symbol):
     
-    # On force la clé dans l'environnement système aussi (ceinture et bretelles)
+    # Injection des clés
     os.environ["GEMINI_API_KEY"] = api_key
     os.environ["GOOGLE_API_KEY"] = api_key
     
-    # --- CERVEAU GEMINI NATIF ---
-    # La syntaxe "gemini/..." dit à CrewAI : "Utilise Google, pas OpenAI !"
+    # --- CHANGEMENT ICI : Modèle plus standard ---
     my_llm = LLM(
-        model="gemini/gemini-1.5-flash",
+        model="gemini/gemini-pro", # On revient au standard absolu
         api_key=api_key,
         temperature=0.3
     )
 
-    # Agent 1 : Financier
+    # Agents
     analyste = Agent(
-        role='Analyste Financier',
-        goal='Analyser les chiffres clés',
-        backstory="Expert comptable rigoureux.",
+        role='Analyste',
+        goal='Chiffres clés',
+        backstory="Expert comptable.",
         verbose=True,
         allow_delegation=False,
-        llm=my_llm, # On connecte le cerveau
+        llm=my_llm,
         tools=[analyse_bourse_tool]
     )
 
-    # Agent 2 : Social
     trader = Agent(
-        role='Expert Sentiment',
-        goal='Sonder le web',
-        backstory="Expert réseaux sociaux.",
+        role='Trader',
+        goal='Sentiment web',
+        backstory="Expert réseaux.",
         verbose=True,
         allow_delegation=False,
-        llm=my_llm, # On connecte le cerveau
+        llm=my_llm,
         tools=[recherche_web_tool]
     )
 
@@ -110,44 +94,42 @@ def run_crew(ticker_symbol):
     )
 
     task_sentiment = Task(
-        description=f"Cherche les avis récents sur {ticker_symbol} (Web/Reddit).",
+        description=f"Cherche l'avis sur {ticker_symbol} (Web/Reddit).",
         expected_output="Synthèse sentiment.",
         agent=trader
     )
 
     task_synthese = Task(
-        description=f"Conclusion pour {ticker_symbol} (PEA). Achat/Vente ? Argumente.",
+        description=f"Conclusion PEA pour {ticker_symbol}. Achat/Vente ? Court.",
         expected_output="Rapport final.",
         agent=analyste,
         context=[task_finance, task_sentiment]
     )
 
-    # Lancement
+    # Crew
     crew = Crew(
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
         process=Process.sequential,
-        memory=False, # Toujours désactivé pour la vitesse
+        memory=False,
         verbose=True
     )
 
     return crew.kickoff()
 
 # --- 6. EXÉCUTION ---
-ticker_input = st.text_input("Symbole de l'action (ex: TTE.PA)", "TTE.PA")
+ticker_input = st.text_input("Action (ex: TTE.PA)", "TTE.PA")
 
-if st.button("Lancer l'Analyse 🚀"):
+if st.button("Lancer 🚀"):
     if not api_key:
-        st.error("⚠️ Clé manquante !")
+        st.error("Clé manquante !")
     else:
-        with st.status("Gemini s'active...", expanded=True) as status:
+        with st.status("Gemini travaille...", expanded=True) as status:
             try:
                 st.write("💎 Initialisation...")
                 resultat = run_crew(ticker_input)
                 status.update(label="✅ Terminé !", state="complete", expanded=False)
-                
-                st.divider()
-                st.markdown("### 📊 Rapport Final")
+                st.markdown("### 📊 Résultat")
                 st.markdown(resultat)
             except Exception as e:
                 st.error(f"Une erreur est survenue : {e}")
