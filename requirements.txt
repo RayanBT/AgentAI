@@ -1,6 +1,6 @@
-crewai==0.80.0
+crewai
+crewai-tools
 langchain_groq
 yfinance
 streamlit
 duckduckgo-search
-langchain_community
