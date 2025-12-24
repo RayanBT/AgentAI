@@ -1,7 +1,8 @@
 crewai
 crewai-tools
-langchain_groq
+langchain
 langchain_community
+langchain_groq
 duckduckgo-search
 yfinance
 streamlit
