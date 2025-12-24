@@ -3,6 +3,7 @@ crewai-tools
 litellm
 langchain
 langchain_community
+langchain_groq
 duckduckgo-search
 yfinance
 streamlit
