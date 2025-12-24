@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import time
+import google.generativeai as genai
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from duckduckgo_search import DDGS
@@ -10,28 +11,55 @@ import yfinance as yf
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 os.environ["OPENAI_API_KEY"] = "NA"
 
-st.set_page_config(page_title="Agent PEA Checkpoints", page_icon="💾", layout="wide")
+st.set_page_config(page_title="Agent PEA Auto-Adaptatif", page_icon="🦎", layout="wide")
 
-st.title("💾 Assistant PEA (Sauvegarde d'Étapes)")
+st.title("🦎 Assistant PEA (Auto-Adaptatif)")
 st.markdown("""
-Ce système fonctionne par **étapes**. Si un agent échoue par manque de quota, 
-un autre agent prend le relais **uniquement pour l'étape en cours**, sans tout recommencer.
+Ce système **scanne ton compte Google** pour trouver les modèles disponibles et crée une chaîne de secours automatiquement.
+Si un modèle échoue (Quota), le suivant prend le relais pour l'étape en cours.
 """)
 
-# --- LISTE DES MODELES (Du plus rapide au plus robuste) ---
-GEMINI_MODELS = [
-    "gemini/gemini-2.0-flash",
-    "gemini/gemini-1.5-flash",
-    "gemini/gemini-1.5-flash-8b",
-    "gemini/gemini-pro"
-]
+# --- FONCTION DE DECOUVERTE DES MODELES ---
+def get_active_models(api_key):
+    """Récupère la liste réelle des modèles disponibles pour l'utilisateur."""
+    try:
+        genai.configure(api_key=api_key)
+        models = list(genai.list_models())
+        
+        # On ne garde que les modèles texte (generateContent)
+        valid_models = [m.name for m in models if 'generateContent' in m.supported_generation_methods]
+        
+        # ON TRIE PAR PRIORITÉ (Flash > Pro > Experimental)
+        # On veut d'abord les modèles rapides et gratuits
+        sorted_models = sorted(valid_models, key=lambda x: (
+            0 if "flash" in x and "2.0" in x else  # Priorité absolue : Flash 2.0
+            1 if "flash" in x and "1.5" in x else  # Priorité 2 : Flash 1.5
+            2 if "flash" in x else                 # Priorité 3 : Autres Flash
+            3 if "pro" in x else                   # Priorité 4 : Pro
+            4                                      # Le reste
+        ))
+        
+        # Conversion au format CrewAI : on remplace 'models/' par 'gemini/'
+        crew_models = [m.replace("models/", "gemini/") for m in sorted_models]
+        return crew_models
+    except Exception as e:
+        return []
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input("Ta clé Google API", type="password")
-    st.divider()
-    console_log = st.empty() # Zone de logs temps réel
+    
+    # Zone d'info dynamique
+    if api_key:
+        available_models = get_active_models(api_key)
+        if available_models:
+            st.success(f"✅ {len(available_models)} modèles détectés !")
+            with st.expander("Voir la chaîne de secours"):
+                for i, m in enumerate(available_models):
+                    st.caption(f"{i+1}. {m}")
+        else:
+            st.error("Impossible de récupérer les modèles. Clé invalide ?")
 
 # --- OUTILS ---
 @tool("Recherche Web")
@@ -57,27 +85,26 @@ def analyse_bourse_tool(ticker: str):
     except: return "Erreur Yahoo."
 
 # --- FONCTION INTELLIGENTE : EXECUTEUR D'ÉTAPE ---
-def execute_step_smart(step_name, task_description, agent_role, agent_tools, context_data=""):
-    """
-    Exécute une seule tâche. Si ça plante, change de modèle et réessaie LA MÊME tâche.
-    """
+def execute_step_smart(step_name, task_description, agent_role, agent_tools, model_list, context_data=""):
+    """Exécute une tâche en essayant la liste des modèles un par un."""
+    
     os.environ["GOOGLE_API_KEY"] = api_key
     os.environ["GEMINI_API_KEY"] = api_key
 
-    # On essaie les modèles un par un
-    for model_name in GEMINI_MODELS:
+    # On boucle sur la liste réelle des modèles de l'utilisateur
+    for model_name in model_list:
         try:
+            # Affichage discret du modèle utilisé
             clean_name = model_name.replace("gemini/", "")
-            console_log.info(f"🔄 Étape '{step_name}' en cours avec : **{clean_name}**")
             
             # 1. Création du cerveau
             my_llm = LLM(model=model_name, api_key=api_key, temperature=0.1)
 
-            # 2. Création de l'agent pour cette étape spécifique
+            # 2. Création de l'agent
             agent = Agent(
                 role=agent_role,
-                goal="Exécuter la tâche demandée.",
-                backstory="Expert précis.",
+                goal="Tâche unique",
+                backstory="Expert.",
                 verbose=True,
                 allow_delegation=False,
                 llm=my_llm,
@@ -85,96 +112,95 @@ def execute_step_smart(step_name, task_description, agent_role, agent_tools, con
                 max_rpm=10
             )
 
-            # 3. Préparation de la tâche
-            # On injecte le "Dossier" (context_data) directement dans la description
-            full_description = task_description
+            # 3. Tâche
+            full_desc = task_description
             if context_data:
-                full_description += f"\n\nVOICI LE DOSSIER DES ETAPES PRECEDENTES (Utilise ces infos) :\n{context_data}"
+                full_desc += f"\nINFO CONTEXTE :\n{context_data}"
 
-            task = Task(
-                description=full_description,
-                expected_output="Réponse synthétique.",
-                agent=agent
-            )
+            task = Task(description=full_desc, expected_output="Réponse courte.", agent=agent)
 
             # 4. Exécution
             crew = Crew(agents=[agent], tasks=[task], verbose=True)
             result = crew.kickoff()
             
-            # Si on arrive ici, c'est que ça a marché !
+            # SUCCÈS !
+            st.toast(f"✅ Étape '{step_name}' réussie avec {clean_name}", icon="🎉")
             return str(result)
 
         except Exception as e:
-            # Si erreur de quota, on capture et on continue la boucle (modèle suivant)
-            if "429" in str(e) or "Quota" in str(e) or "ResourceExhausted" in str(e):
-                st.toast(f"⚠️ {clean_name} épuisé sur l'étape '{step_name}'. Passage au suivant...", icon="🔀")
-                time.sleep(2) # Petite pause respiration
-                continue # On essaie le prochain modèle de la liste
+            error_str = str(e)
+            # Gestion des erreurs
+            if "404" in error_str:
+                # Si le modèle n'existe pas (bizarre car on l'a scanné, mais possible), on passe
+                continue 
+            elif "429" in error_str or "Quota" in error_str or "ResourceExhausted" in error_str:
+                st.toast(f"⚠️ {clean_name} épuisé. Bascule sur le suivant...", icon="🔀")
+                time.sleep(2)
+                continue
             else:
-                # Si c'est une autre erreur, on l'affiche
                 st.error(f"Erreur technique sur {clean_name} : {e}")
                 return None
 
-    st.error("❌ Tous les agents ont échoué pour cette étape.")
+    st.error("❌ Tous les modèles ont échoué.")
     return None
 
-# --- ORCHESTRATION DU DOSSIER ---
+# --- ORCHESTRATION ---
 def run_full_analysis(ticker):
-    dossier = "" # C'est ici qu'on stocke la mémoire du projet
+    # 1. On récupère la liste fraîche des modèles
+    model_list = get_active_models(api_key)
+    if not model_list:
+        st.error("Aucun modèle disponible.")
+        return None
+
+    dossier = ""
     
     # --- ETAPE 1 : FINANCE ---
     with st.spinner("📊 Étape 1/3 : Analyse Financière..."):
         res_finance = execute_step_smart(
-            step_name="Finance",
-            task_description=f"Donne uniquement Prix, PER et Dividende pour {ticker}.",
-            agent_role="Analyste Financier",
-            agent_tools=[analyse_bourse_tool]
+            "Finance",
+            f"Donne Prix, PER et Dividende pour {ticker}.",
+            "Analyste",
+            [analyse_bourse_tool],
+            model_list
         )
         if not res_finance: return None
-        
-        # On ajoute au dossier
-        dossier += f"--- DONNÉES FINANCIÈRES ---\n{res_finance}\n\n"
-        st.success("✅ Données financières sécurisées !")
-        with st.expander("Voir les données brutes"):
-            st.write(res_finance)
+        dossier += f"FINANCE:\n{res_finance}\n\n"
+        st.info(f"💰 Données : {res_finance}")
 
     # --- ETAPE 2 : SENTIMENT ---
     with st.spinner("🌍 Étape 2/3 : Analyse Sentiment..."):
         res_social = execute_step_smart(
-            step_name="Sentiment",
-            task_description=f"Cherche sur le web l'avis des investisseurs sur {ticker}.",
-            agent_role="Trader Web",
-            agent_tools=[recherche_web_tool]
+            "Sentiment",
+            f"Cherche sentiment web sur {ticker}.",
+            "Trader",
+            [recherche_web_tool],
+            model_list
         )
         if not res_social: return None
-        
-        # On ajoute au dossier
-        dossier += f"--- SENTIMENT SOCIAL ---\n{res_social}\n\n"
-        st.success("✅ Sentiment social sécurisé !")
-        with st.expander("Voir le sentiment brut"):
-            st.write(res_social)
+        dossier += f"SENTIMENT:\n{res_social}\n\n"
 
-    # --- ETAPE 3 : SYNTHÈSE (Avec le dossier complet) ---
-    with st.spinner("🧠 Étape 3/3 : Synthèse Finale..."):
+    # --- ETAPE 3 : CONCLUSION ---
+    with st.spinner("🧠 Étape 3/3 : Synthèse..."):
         res_final = execute_step_smart(
-            step_name="Conclusion",
-            task_description=f"Agis comme un conseiller en gestion de patrimoine. Analyse le dossier ci-dessous concernant {ticker} et donne une recommandation claire (Achat/Vente/Attente) pour un PEA.",
-            agent_role="Conseiller Wealth",
-            agent_tools=[], # Pas besoin d'outils, il a le dossier !
-            context_data=dossier # <--- ON LUI PASSE TOUT LE TRAVAIL PRÉCÉDENT
+            "Conclusion",
+            f"Conseil PEA pour {ticker} (Achat/Vente) basé sur le dossier.",
+            "Conseiller",
+            [], # Pas d'outils
+            model_list,
+            context_data=dossier
         )
         return res_final
 
 # --- EXECUTION ---
 ticker = st.text_input("Action (ex: TTE.PA)", "TTE.PA")
 
-if st.button("Lancer l'analyse Séquentielle 🚀"):
+if st.button("Lancer l'analyse Auto-Adaptative 🚀"):
     if not api_key:
         st.error("Clé manquante !")
     else:
         final_report = run_full_analysis(ticker)
-        
         if final_report:
             st.divider()
-            st.markdown("### 🏆 Rapport Final Consolidé")
+            st.success("Analyse complète terminée !")
+            st.markdown("### 🏆 Rapport Final")
             st.markdown(final_report)
