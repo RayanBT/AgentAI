@@ -9,57 +9,28 @@ from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from duckduckgo_search import DDGS
 
-# --- 1. CONFIGURATION & STYLE CSS ---
+# --- 1. CONFIGURATION & STYLE ---
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 os.environ["OPENAI_API_KEY"] = "NA"
 
-st.set_page_config(page_title="AI Financial Analyst Pro", page_icon="💎", layout="wide")
+st.set_page_config(page_title="AI Financial Analyst", page_icon="💎", layout="wide")
 
-# CSS PERSONNALISÉ POUR LE RENDU "PRO"
 st.markdown("""
 <style>
-    /* Nettoyage de l'interface par défaut */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* Style des cartes de metrics */
     div[data-testid="stMetric"] {
-        background-color: #1E1E1E;
-        padding: 15px;
-        border-radius: 10px;
+        background-color: #1a1a1a;
         border: 1px solid #333;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-    }
-    
-    /* Style des boutons */
-    div.stButton > button {
-        width: 100%;
         border-radius: 8px;
-        font-weight: bold;
-        padding-top: 10px;
-        padding-bottom: 10px;
-    }
-    
-    /* Titres plus élégants */
-    h1 { font-family: 'Helvetica Neue', sans-serif; font-weight: 700; color: #E0E0E0; }
-    h2 { font-family: 'Helvetica Neue', sans-serif; font-weight: 600; color: #00ADB5; }
-    h3 { font-size: 1.2rem; font-weight: 500; }
-    
-    /* Logs Console style */
-    .console-log {
-        font-family: 'Courier New', monospace;
-        font-size: 0.85em;
-        color: #00FF41;
-        background-color: #000;
         padding: 10px;
-        border-radius: 5px;
-        max-height: 200px;
-        overflow-y: auto;
     }
+    /* Style du compte à rebours */
+    .stAlert { font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. DONNÉES & STRATÉGIES ---
+# --- 2. STRATÉGIES ---
 HUNTING_STRATEGIES = {
     "💎 Small Caps (Pépites FR)": "Trouve 4 actions françaises (PEA) small/mid caps sous-évaluées hors CAC40.",
     "🚀 Tech & Green Growth": "Trouve 4 actions européennes (PEA) Tech ou Énergie Verte en forte croissance.",
@@ -67,48 +38,41 @@ HUNTING_STRATEGIES = {
     "🔥 Market Momentum": "Trouve 4 actions PEA qui buzzent positivement cette semaine."
 }
 
-# --- 3. FONCTIONS SYSTÈME (CACHE & MODELS) ---
+# --- 3. GESTION DES MODÈLES (FILTRE STRICT) ---
 @st.cache_data(show_spinner=False)
 def get_active_models(api_key):
     try:
         genai.configure(api_key=api_key)
         models = list(genai.list_models())
         valid = []
+        # LISTE NOIRE pour éviter les crashs
+        BANNED = ['tts', 'vision', 'embedding', 'geek', 'gecko', 'image', 'banana', 'nano', 'exp', 'preview']
+        
         for m in models:
             if 'generateContent' not in m.supported_generation_methods: continue
-            if any(x in m.name.lower() for x in ['tts', 'vision', 'embedding', 'geek']): continue
+            if any(b in m.name.lower() for b in BANNED): continue
             valid.append(m.name)
-        # Tri : Flash 1.5 (Stable) > Flash 2.0 (Rapide) > Pro
-        return sorted(valid, key=lambda x: (0 if "gemini-1.5-flash" in x else 1 if "gemini-2.0-flash" in x else 2))
+            
+        # TRI : On privilégie la stabilité
+        return sorted(valid, key=lambda x: (
+            0 if "gemini-1.5-flash" in x and "8b" not in x else 
+            1 if "gemini-2.0-flash" in x else 2
+        ))
     except: return []
 
-# --- 4. SIDEBAR PRO ---
+# --- 4. SIDEBAR ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/4205/4205906.png", width=60)
-    st.markdown("### **AI Analyst Pro**")
-    st.markdown("---")
+    st.markdown("### 💎 AI Analyst Pro")
+    api_key = st.text_input("Clé API Google", type="password")
     
-    api_key = st.text_input("🔑 Clé API Google", type="password", help="Nécessaire pour activer les agents.")
-    
-    status_container = st.empty()
+    crew_models = []
     if api_key:
         models = get_active_models(api_key)
         if models:
-            status_container.success(f"🟢 Système Actif ({len(models)} Agents)")
+            st.success(f"🟢 {len(models)} Modèles Stables")
             crew_models = [m.replace("models/", "gemini/") for m in models]
         else:
-            status_container.error("🔴 Clé invalide ou API hors ligne")
-            crew_models = []
-    else:
-        status_container.info("⚪ En attente de clé")
-        crew_models = []
-    
-    st.markdown("---")
-    st.markdown("#### ⚙️ Paramètres")
-    with st.expander("Voir le roulement des agents"):
-        if crew_models:
-            for m in crew_models: st.caption(f"• {m.replace('gemini/', '')}")
-        else: st.caption("Aucun agent connecté.")
+            st.error("Aucun modèle stable.")
 
 # --- 5. OUTILS ---
 @tool("Recherche Web")
@@ -122,18 +86,25 @@ def recherche_web_tool(query: str):
 
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
-    """Données financières."""
+    """Récupère Prix, PER et Dividende."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
+        
+        # Récupération sécurisée des données (évite les None)
+        price = info.get('currentPrice') or info.get('regularMarketPrice') or 0.0
+        per = info.get('forwardPE') or info.get('trailingPE') or 0.0
+        div = (info.get('dividendYield', 0) or 0) * 100
+        
+        # On retourne un format JSON String propre
         return str({
-            "Prix": info.get('currentPrice'),
-            "PER": info.get('forwardPE'),
-            "Div": (info.get('dividendYield', 0) or 0) * 100
+            "Prix": round(price, 2),
+            "PER": round(per, 2),
+            "Div": round(div, 2)
         })
-    except: return "Erreur Yahoo."
+    except: return str({"Prix": 0, "PER": 0, "Div": 0})
 
-# --- 6. MOTEUR D'EXÉCUTION (ROBUSTE) ---
+# --- 6. MOTEUR D'EXÉCUTION (AVEC PAUSE VISUELLE) ---
 def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, context=""):
     os.environ["GOOGLE_API_KEY"] = api_key
     os.environ["GEMINI_API_KEY"] = api_key
@@ -146,17 +117,15 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
         for model_name in model_list:
             clean_name = model_name.replace("gemini/", "")
             try:
-                log_func(f"⚡ **{clean_name}** travaille sur : {step_name}...", "running")
-                
+                log_func(f"⚡ {clean_name} analyse...", "running")
                 my_llm = LLM(model=model_name, api_key=api_key, temperature=0.1)
                 agent = Agent(role=role, goal="Expertise", backstory="Pro.", verbose=True, allow_delegation=False, llm=my_llm, tools=tools, max_rpm=10)
                 
-                desc = task_desc + (f"\nCONTEXTE PRÉCÉDENT:\n{context}" if context else "")
+                desc = task_desc + (f"\nCONTEXTE:\n{context}" if context else "")
                 task = Task(description=desc, expected_output="Synthétique.", agent=agent)
                 
                 crew = Crew(agents=[agent], tasks=[task], verbose=True)
                 result = crew.kickoff()
-                
                 log_func(f"✅ {step_name} validé.", "success")
                 return str(result)
 
@@ -164,31 +133,47 @@ def execute_step_smart(step_name, task_desc, role, tools, model_list, log_func, 
                 err = str(e)
                 if "429" in err or "Quota" in err:
                     match = re.search(r"retry in (\d+\.?\d*)s", err)
-                    wait = float(match.group(1)) if match else 60.0
+                    wait = float(match.group(1)) if match else 30.0
                     retry_delays.append(wait)
-                    log_func(f"⚠️ {clean_name} Quota (Reset: {int(wait)}s). Bascule...", "warning")
+                    log_func(f"⚠️ {clean_name} vide (Reset {int(wait)}s).", "warning")
                     time.sleep(1)
                     continue
-                if "404" in err: continue
+                if "404" in err or "400" in err: continue
         
+        # SI TOUT LE MONDE EST VIDE : PAUSE VISUELLE
         if not retry_delays: return None
+        
         if current_retry < max_retries:
             wait_time = min(retry_delays) + 2
+            
+            # --- AFFICHAGE DU COMPTE A REBOURS ---
+            countdown_box = st.empty()
+            progress_bar = st.progress(0)
+            
             for i in range(int(wait_time), 0, -1):
-                log_func(f"🛑 Pause Quota Global... Reprise {i}s", "error")
+                percent = 1.0 - (i / wait_time)
+                countdown_box.error(f"🛑 **PAUSE QUOTA GOOGLE** : Tous les agents rechargent... Reprise dans **{i}s**")
+                progress_bar.progress(percent)
                 time.sleep(1)
+            
+            # Nettoyage après attente
+            countdown_box.empty()
+            progress_bar.empty()
+            log_func("🔄 Reprise du travail !", "info")
             current_retry += 1
         else: return None
 
-# --- 7. LOGIQUE MÉTIER ---
+# --- 7. LOGIQUE MÉTIER & PARSING (Correction du Bug des "0") ---
 def parse_finance_data(fin_str):
-    """Extrait proprement les chiffres du string brut."""
+    """Extrait les chiffres avec des Regex souples."""
     try:
-        # Nettoyage basique si l'IA bavarde
-        fin_str = fin_str.replace("'", '"')
-        match_prix = re.search(r"'?Prix'?: ?([\d\.]+)", fin_str)
-        match_per = re.search(r"'?PER'?: ?([\d\.]+)", fin_str)
-        match_div = re.search(r"'?Div'?: ?([\d\.]+)", fin_str)
+        # On nettoie la chaine pour faciliter la recherche
+        clean_str = fin_str.replace("'", "").replace('"', '').replace(":", " ")
+        
+        # Regex qui cherche "Prix" suivi de chiffres (avec point ou virgule)
+        match_prix = re.search(r"(?:Prix|Price)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
+        match_per = re.search(r"(?:PER|P/E)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
+        match_div = re.search(r"(?:Div|Yield)[\s]+([\d\.]+)", clean_str, re.IGNORECASE)
         
         return {
             "Prix": float(match_prix.group(1)) if match_prix else 0.0,
@@ -196,201 +181,142 @@ def parse_finance_data(fin_str):
             "Div": float(match_div.group(1)) if match_div else 0.0
         }
     except:
-        return {"Prix": 0, "PER": 0, "Div": 0}
+        return {"Prix": 0.0, "PER": 0.0, "Div": 0.0}
 
 def analyze_one_stock(ticker, update_status_func):
-    """Analyse complète."""
     if not crew_models: return None
     
     dossier = ""
-    # Logs interne
-    log_history = []
-    def log_wrapper(msg, state):
-        log_history.append(f"[{state.upper()}] {msg}")
-        update_status_func(msg, state)
+    def log_wrapper(msg, state): update_status_func(msg, state)
 
-    # 1. Finance
-    res_fin = execute_step_smart("Finance", f"Donne Prix, PER, Div (%) de {ticker}.", "Analyste", [analyse_bourse_tool], crew_models, log_wrapper)
+    # 1. FINANCE : On force l'IA à répondre un format précis pour éviter le bug des 0
+    prompt_finance = f"""
+    Utilise l'outil Bourse pour {ticker}.
+    IMPORTANT : Ta réponse DOIT être UNIQUEMENT sous cette forme :
+    Prix: X
+    PER: Y
+    Div: Z
+    Ne mets pas de texte autour.
+    """
+    res_fin = execute_step_smart("Finance", prompt_finance, "Analyste", [analyse_bourse_tool], crew_models, log_wrapper)
     if not res_fin: return None
+    
+    # Extraction Immédiate
     fin_data = parse_finance_data(res_fin)
     dossier += f"FINANCE: {res_fin}\n"
     
-    # 2. Sentiment
+    # 2. SENTIMENT
     res_soc = execute_step_smart("Sentiment", f"Avis web sur {ticker}.", "Trader", [recherche_web_tool], crew_models, log_wrapper)
     if not res_soc: res_soc = "Neutre"
     dossier += f"SENTIMENT: {res_soc}\n"
     
-    # 3. Verdict
-    res_con = execute_step_smart("Notation", f"Analyse le dossier {ticker}. Donne note /10 et avis court (ACHAT/VENTE/ATTENTE).", "Conseiller", [], crew_models, log_wrapper, dossier)
+    # 3. VERDICT
+    res_con = execute_step_smart("Notation", f"Analyse dossier {ticker}. Note /10 et avis court (ACHAT/VENTE).", "Conseiller", [], crew_models, log_wrapper, dossier)
     
     score = 0
     match = re.search(r"(\d+)/10", str(res_con))
     if match: score = int(match.group(1))
     
-    # Détection recommandation
     rec = "NEUTRE"
     if "ACHAT" in res_con.upper(): rec = "ACHAT"
     elif "VENTE" in res_con.upper(): rec = "VENTE"
     
-    return {
-        "Ticker": ticker,
-        "Data": fin_data,
-        "Score": score,
-        "Rec": rec,
-        "Avis": res_con,
-        "Logs": log_history
-    }
+    return {"Ticker": ticker, "Data": fin_data, "Score": score, "Rec": rec, "Avis": res_con}
 
 def hunt_tickers(strategy_prompt, status_func):
-    status_func("🧠 Le Stratège scanne le marché...", "running")
-    prompt = f"Expert bourse. Mission: {strategy_prompt}. Donne UNIQUEMENT liste de 4 tickers Yahoo (ex: AI.PA) séparés par virgules."
-    res = execute_step_smart("Stratège", prompt, "Stratège", [recherche_web_tool], crew_models, lambda m,s: None) # Pas de log détail ici
+    status_func("🧠 Le Stratège scanne...", "running")
+    prompt = f"Expert bourse. Mission: {strategy_prompt}. Donne UNIQUEMENT 4 tickers Yahoo (ex: AI.PA) séparés par virgules."
+    res = execute_step_smart("Stratège", prompt, "Stratège", [recherche_web_tool], crew_models, lambda m,s: None)
     if res:
         clean = res.replace(" ", "").replace("\n", "").split(",")
         return [t for t in clean if "." in t or len(t) > 2][:4]
     return []
 
-# --- 8. INTERFACE PRINCIPALE (UI DASHBOARD) ---
+# --- 8. INTERFACE DASHBOARD ---
+st.markdown("## 💎 AI Financial Analyst <span style='font-size:0.6em; color:gray'>Pro Edition</span>", unsafe_allow_html=True)
 
-# Header personnalisé
-st.markdown("## 💎 AI Financial Analyst <span style='font-size:0.6em; color:gray'>v3.0 Pro</span>", unsafe_allow_html=True)
-
-# Tabs stylisés
 tab_solo, tab_radar = st.tabs(["🔍 Analyse Focus", "📡 Radar de Marché"])
 
-# === TAB 1 : FOCUS (SOLO) ===
+# === TAB 1 : FOCUS ===
 with tab_solo:
-    col_in, col_btn = st.columns([3, 1])
-    with col_in:
-        ticker_input = st.text_input("Symbole de l'action", value="TTE.PA", placeholder="Ex: MC.PA, NVDA", label_visibility="collapsed")
-    with col_btn:
-        btn_solo = st.button("Lancer l'Analyse", key="btn_s")
-
-    if btn_solo and api_key:
-        # Zone d'affichage des résultats
-        result_container = st.container()
-        
-        # Zone de status (Logs UX)
-        with st.status("🚀 Analyse en cours...", expanded=True) as status:
-            log_placeholder = st.empty()
+    c1, c2 = st.columns([3, 1])
+    ticker_in = c1.text_input("Symbole", "TTE.PA", label_visibility="collapsed")
+    if c2.button("Analyser", key="btn_s") and api_key:
+        with st.status("Analyse en cours...", expanded=True) as status:
+            log_spot = st.empty()
+            def ui_log(m, t): 
+                if t=="running": log_spot.info(m)
+                elif t=="success": log_spot.success(m)
+                elif t=="warning": log_spot.warning(m)
+                elif t=="error": log_spot.error(m)
             
-            def update_ui_log(msg, type_msg):
-                if type_msg == "running": log_placeholder.info(msg)
-                elif type_msg == "success": log_placeholder.success(msg)
-                elif type_msg == "warning": log_placeholder.warning(msg)
-                elif type_msg == "error": log_placeholder.error(msg)
-            
-            res = analyze_one_stock(ticker_input, update_ui_log)
-            
+            res = analyze_one_stock(ticker_in, ui_log)
             if res:
-                status.update(label="✅ Analyse terminée avec succès", state="complete", expanded=False)
+                status.update(label="Terminé", state="complete", expanded=False)
+                st.markdown("---")
                 
-                # --- AFFICHAGE PRO DES RÉSULTATS ---
-                with result_container:
-                    st.markdown("---")
-                    # En-tête avec le Score géant
-                    c1, c2, c3 = st.columns([1, 2, 1])
-                    with c1:
-                        st.metric("Score IA", f"{res['Score']}/10", delta="Potentiel", delta_color="normal")
-                    with c2:
-                        rec_color = "green" if res['Rec'] == "ACHAT" else "red" if res['Rec'] == "VENTE" else "gray"
-                        st.markdown(f"<h2 style='text-align: center; color: {rec_color}; margin-top: 0;'>{res['Rec']}</h2>", unsafe_allow_html=True)
-                        st.caption("Recommandation basée sur Finance + Sentiment")
-                    with c3:
-                         st.metric("Confiance", "Haute")
+                k1, k2, k3 = st.columns([1,2,1])
+                k1.metric("Score", f"{res['Score']}/10")
+                k2.markdown(f"<h2 style='text-align:center;color:{'#00FF41' if 'ACHAT' in res['Rec'] else '#FF4136'}'>{res['Rec']}</h2>", unsafe_allow_html=True)
+                k3.metric("Confiance", "Haute")
+                
+                # BUG DES 0 CORRIGÉ ICI
+                d1, d2, d3 = st.columns(3)
+                d1.metric("Prix", f"{res['Data']['Prix']} €")
+                d2.metric("PER", f"{res['Data']['PER']:.1f}")
+                d3.metric("Div", f"{res['Data']['Div']:.2f} %")
+                
+                st.info(f"**Avis:** {res['Avis']}")
 
-                    # KPIs Financiers (Cartes)
-                    st.markdown("##### 📊 Indicateurs Clés")
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Prix Actuel", f"{res['Data']['Prix']} €")
-                    k2.metric("P.E.R (Ratio)", f"{res['Data']['PER']:.1f}")
-                    k3.metric("Rendement Div.", f"{res['Data']['Div']:.2f} %")
-                    
-                    # Analyse textuelle
-                    st.info(f"💡 **Avis de l'Expert :** {res['Avis']}")
-                    
-                    # Logs techniques (Cachés mais dispos)
-                    with st.expander("🛠️ Voir le journal technique"):
-                        st.code("\n".join(res['Logs']), language="bash")
-
-# === TAB 2 : RADAR (CHASSEUR) ===
+# === TAB 2 : RADAR ===
 with tab_radar:
-    c_strat, c_go = st.columns([3, 1])
-    with c_strat:
-        strat_choice = st.selectbox("Stratégie de Chasse", list(HUNTING_STRATEGIES.keys()), label_visibility="collapsed")
-    with c_go:
-        btn_radar = st.button("Activer le Radar", key="btn_r")
-
-    if btn_radar and api_key:
+    c_s, c_b = st.columns([3, 1])
+    strat = c_s.selectbox("Stratégie", list(HUNTING_STRATEGIES.keys()), label_visibility="collapsed")
+    
+    if c_b.button("Scanner", key="btn_r") and api_key:
         st.markdown("---")
-        radar_status = st.empty()
-        radar_prog = st.progress(0)
-        
-        # Zone du tableau vide au début
+        radar_stat = st.empty()
+        radar_bar = st.progress(0)
         table_spot = st.empty()
         
-        # Fonction log locale
-        def radar_log(msg, type_msg):
-            radar_status.caption(f"📡 {msg}")
-
-        # 1. Chasse
-        tickers = hunt_tickers(HUNTING_STRATEGIES[strat_choice], radar_log)
+        def r_log(m, t): radar_stat.caption(f"📡 {m}")
         
-        if not tickers:
-            st.error("Aucune cible trouvée.")
-        else:
-            radar_status.markdown(f"**🎯 Cibles :** `{'` `'.join(tickers)}`")
-            results = []
+        tickers = hunt_tickers(HUNTING_STRATEGIES[strat], r_log)
+        
+        if tickers:
+            radar_stat.markdown(f"**Cibles:** `{'` `'.join(tickers)}`")
+            data = []
             
             for i, t in enumerate(tickers):
-                # Pause tactique UI
-                if i > 0: 
-                    radar_log(f"Pause tactique avant {t}...", "running")
+                if i > 0:
+                    r_log(f"Pause tactique (3s) avant {t}...", "running")
                     time.sleep(3)
-                    
-                # Analyse silencieuse (on ne montre pas le détail ici)
-                res = analyze_one_stock(t, radar_log)
                 
+                res = analyze_one_stock(t, r_log)
                 if res:
-                    results.append({
-                        "Action": res['Ticker'],
-                        "Score": res['Score'],
-                        "Avis": res['Rec'], # Juste le mot clé
-                        "Prix": f"{res['Data']['Prix']} €",
+                    data.append({
+                        "Action": t, 
+                        "Score": res['Score'], 
+                        "Avis": res['Rec'],
+                        "Prix": f"{res['Data']['Prix']} €", # Affichera la vraie valeur
                         "PER": f"{res['Data']['PER']:.1f}",
                         "Rendement": f"{res['Data']['Div']:.1f}%",
-                        "Détail": res['Avis'] # Pour le tooltip ou expander
+                        "Résumé": res['Avis']
                     })
                     
-                    # MISE A JOUR DU TABLEAU EN TEMPS REEL
-                    df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
-                    
+                    df = pd.DataFrame(data).sort_values(by="Score", ascending=False)
                     table_spot.dataframe(
-                        df,
-                        column_order=("Action", "Score", "Avis", "Prix", "PER", "Rendement", "Détail"),
+                        df, 
+                        column_order=("Action", "Score", "Avis", "Prix", "PER", "Rendement", "Résumé"),
                         hide_index=True,
                         use_container_width=True,
                         column_config={
-                            "Score": st.column_config.ProgressColumn(
-                                "Potentiel",
-                                help="Score sur 10",
-                                format="%d/10",
-                                min_value=0,
-                                max_value=10,
-                            ),
-                            "Avis": st.column_config.TextColumn(
-                                "Verdict",
-                                help="Recommandation IA",
-                                width="small"
-                            ),
-                            "Détail": st.column_config.TextColumn(
-                                "Analyse Complète",
-                                width="large"
-                            )
+                            "Score": st.column_config.ProgressColumn("Note", format="%d/10", min_value=0, max_value=10),
+                            "Résumé": st.column_config.TextColumn("Détail", width="large")
                         }
                     )
-                
-                radar_prog.progress((i + 1) / len(tickers))
-            
-            radar_status.success("Radar terminé !")
+                radar_bar.progress((i+1)/len(tickers))
+            radar_stat.success("Scan terminé !")
             st.balloons()
+        else:
+            st.error("Aucune cible trouvée.")
