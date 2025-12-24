@@ -3,21 +3,20 @@ import os
 import yfinance as yf
 from crewai import Agent, Task, Crew, Process
 from crewai.tools import tool
+# On utilise la classe ChatGoogleGenerativeAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from duckduckgo_search import DDGS
 
 # --- 1. CONFIGURATION SYSTÈME ---
-# On désactive la télémétrie pour éviter les lignes rouges dans les logs
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
+# On coupe l'appel à OpenAI
+os.environ["OPENAI_API_KEY"] = "NA"
 
 # --- 2. INTERFACE STREAMLIT ---
 st.set_page_config(page_title="Agent PEA Gemini", page_icon="💎", layout="wide")
 
 st.title("💎 Assistant PEA (Google Gemini)")
-st.markdown("""
-Cet agent utilise **Gemini 1.5 Flash**.  
-Il est gratuit, rapide et possède une grande capacité d'analyse.
-""")
+st.markdown("Analyse financière & Sentiment social - **Propulsé par Google**")
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
@@ -36,7 +35,7 @@ def recherche_web_tool(query: str):
     """
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+            results = list(ddgs.text(query, max_results=4))
             if not results:
                 return "Aucun résultat trouvé."
             return "\n".join([f"- {r['title']}: {r['body']}" for r in results])
@@ -46,7 +45,7 @@ def recherche_web_tool(query: str):
 @tool("Bourse Yahoo")
 def analyse_bourse_tool(ticker: str):
     """
-    Récupère les données financières (Prix, PER, Dividende).
+    Récupère les données financières.
     """
     try:
         stock = yf.Ticker(ticker)
@@ -55,11 +54,9 @@ def analyse_bourse_tool(ticker: str):
         data = {
             "Nom": info.get('longName', ticker),
             "Prix": info.get('currentPrice', 'N/A'),
-            "Devise": info.get('currency', 'EUR'),
             "PER": info.get('forwardPE', 'N/A'),
             "Dividende (%)": (info.get('dividendYield', 0) or 0) * 100,
-            "Recommandation": info.get('recommendationKey', 'Inconnue'),
-            "Secteur": info.get('sector', 'N/A')
+            "Recommandation": info.get('recommendationKey', 'Inconnue')
         }
         return str(data)
     except Exception as e:
@@ -68,13 +65,13 @@ def analyse_bourse_tool(ticker: str):
 # --- 5. MOTEUR DE L'AGENT ---
 def run_crew(ticker_symbol):
     
-    # --- CORRECTION CRITIQUE ICI ---
-    # On force la clé dans l'environnement système pour que Google la trouve
+    # Injection de la clé API
     os.environ["GOOGLE_API_KEY"] = api_key
     
-    # Configuration du modèle Gemini
+    # --- CORRECTION DU MODÈLE ---
+    # On utilise 'gemini-pro' qui est le nom stable et reconnu par défaut
     gemini_llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-pro",
         verbose=True,
         temperature=0.4,
         google_api_key=api_key
@@ -83,7 +80,7 @@ def run_crew(ticker_symbol):
     # Agent 1 : Financier
     analyste = Agent(
         role='Analyste Financier',
-        goal='Analyser les chiffres clés',
+        goal='Analyser les chiffres',
         backstory="Expert comptable rigoureux.",
         verbose=True,
         allow_delegation=False,
@@ -104,13 +101,13 @@ def run_crew(ticker_symbol):
 
     # Tâches
     task_finance = Task(
-        description=f"Donne les fondamentaux de {ticker_symbol} (Prix, PER, Dividende).",
+        description=f"Donne les chiffres (Prix, PER, Dividende) de {ticker_symbol}.",
         expected_output="Synthèse financière.",
         agent=analyste
     )
 
     task_sentiment = Task(
-        description=f"Cherche les avis récents sur {ticker_symbol} (Web/Reddit).",
+        description=f"Cherche l'avis sur {ticker_symbol} (Web/Reddit).",
         expected_output="Synthèse sentiment.",
         agent=trader
     )
@@ -127,7 +124,7 @@ def run_crew(ticker_symbol):
         agents=[analyste, trader],
         tasks=[task_finance, task_sentiment, task_synthese],
         process=Process.sequential,
-        memory=False, # Désactivé pour la vitesse
+        memory=False,
         verbose=True
     )
 
@@ -145,8 +142,6 @@ if st.button("Lancer l'Analyse avec Gemini 🚀"):
                 st.write("🧠 Réflexion en cours...")
                 resultat = run_crew(ticker_input)
                 status.update(label="✅ Terminé !", state="complete", expanded=False)
-                
-                st.divider()
                 st.markdown("### 📊 Rapport Final")
                 st.markdown(resultat)
             except Exception as e:
