@@ -1,4 +1,4 @@
-crewai
+crewai==0.80.0
 langchain_groq
 yfinance
 streamlit

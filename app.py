@@ -1,14 +1,14 @@
 import streamlit as st
 import os
 
-# --- CORRECTION 1 : Désactiver la télémétrie CrewAI pour éviter les erreurs de Threads ---
+# --- DISABLE TELEMETRY (Pour éviter les erreurs de Threads) ---
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
 import yfinance as yf
 from crewai import Agent, Task, Crew, Process
 from langchain_groq import ChatGroq
-from crewai import Tool
-# --- CORRECTION 2 : Utiliser l'outil LangChain Community (plus stable) ---
+
+# --- IMPORT CORRIGÉ : On utilise les outils LangChain directement ---
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain.tools import tool as langchain_tool
 
@@ -28,13 +28,14 @@ with st.sidebar:
 def run_analysis(ticker):
     # 1. Configurer l'API
     os.environ["GROQ_API_KEY"] = api_key
+    # On utilise un modèle rapide et gratuit
     llm = ChatGroq(model="llama3-70b-8192", temperature=0.5)
 
     # 2. Outils
-    # On initialise l'outil de recherche version stable
+    # L'outil de recherche Web (Version LangChain stable)
     search_tool = DuckDuckGoSearchRun()
 
-    # On définit l'outil bourse avec le décorateur de LangChain pour être sûr de la compatibilité
+    # L'outil Bourse (Custom Tool via décorateur LangChain)
     @langchain_tool("Outil Analyse Boursiere")
     def stock_analysis_tool(ticker_symbol: str):
         """Récupère les données financières (Prix, PER, Dividende)."""
@@ -58,8 +59,9 @@ def run_analysis(ticker):
         goal='Analyser les fondamentaux',
         backstory="Expert comptable rigoureux.",
         llm=llm,
-        tools=[stock_analysis_tool], # L'outil custom
-        verbose=True
+        tools=[stock_analysis_tool],
+        verbose=True,
+        allow_delegation=False
     )
 
     trader_social = Agent(
@@ -67,8 +69,9 @@ def run_analysis(ticker):
         goal='Analyser X et Reddit',
         backstory="Expert des réseaux sociaux et de la psychologie de marché.",
         llm=llm,
-        tools=[search_tool], # L'outil DuckDuckGo stable
-        verbose=True
+        tools=[search_tool],
+        verbose=True,
+        allow_delegation=False
     )
 
     # 4. Tâches
