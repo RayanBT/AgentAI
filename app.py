@@ -2,22 +2,22 @@ import streamlit as st
 import os
 
 # --- DISABLE TELEMETRY ---
-# On le laisse tout en haut pour bloquer les erreurs de "Signal"
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
 import yfinance as yf
 
-# --- CORRECTION DES IMPORTS (Version CrewAI 1.7.0+) ---
-# 1. On retire 'tool' d'ici (C'était ça l'erreur !)
+# 1. IMPORTS CREWAI
 from crewai import Agent, Task, Crew, Process
+# On n'importe QUE 'tool' d'ici. On laisse tomber DuckDuckGoSearchTool qui est buggé.
+from crewai_tools import tool 
 
-# 2. On met 'tool' ICI, avec les autres outils
-from crewai_tools import DuckDuckGoSearchTool, tool
+# 2. IMPORTS LANGCHAIN & GROQ
 from langchain_groq import ChatGroq
+# On utilise le moteur de recherche de LangChain (plus stable)
+from langchain_community.tools import DuckDuckGoSearchRun
 
-# --- CONFIGURATION DE LA PAGE ---
+# --- CONFIGURATION PAGE ---
 st.set_page_config(page_title="Agent PEA Intelligent", page_icon="📈")
-
 st.title("📈 Assistant PEA Intelligent")
 st.markdown("Analyse financière & Sentiment social (X/Reddit)")
 
@@ -25,18 +25,24 @@ st.markdown("Analyse financière & Sentiment social (X/Reddit)")
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input("Ta clé API Groq", type="password")
-    st.info("Récupère ta clé sur console.groq.com")
+    if not api_key:
+        st.warning("⚠️ Clé API manquante")
 
-# --- FONCTIONS & OUTILS ---
+# --- FONCTIONS ---
 def run_analysis(ticker):
-    # 1. Configurer l'API
     os.environ["GROQ_API_KEY"] = api_key
     llm = ChatGroq(model="llama3-70b-8192", temperature=0.5)
 
-    # 2. Outils
-    search_tool = DuckDuckGoSearchTool()
+    # --- CRÉATION DES OUTILS "FAITS MAISON" ---
 
-    # L'outil Bourse (Décorateur @tool importé de crewai_tools)
+    # 1. Outil de Recherche (Remplacement manuel de l'outil buggé)
+    @tool("Outil Recherche Web")
+    def custom_search_tool(query: str):
+        """Utilise ce moteur pour chercher des actualités, des avis sur X/Reddit."""
+        search_engine = DuckDuckGoSearchRun()
+        return search_engine.run(query)
+
+    # 2. Outil Bourse
     @tool("Outil Analyse Boursiere")
     def stock_analysis_tool(ticker_symbol: str):
         """Récupère les données financières (Prix, PER, Dividende)."""
@@ -54,7 +60,7 @@ def run_analysis(ticker):
         except Exception as e:
             return f"Erreur: {str(e)}"
 
-    # 3. Agents
+    # --- AGENTS ---
     analyste = Agent(
         role='Analyste Financier',
         goal='Analyser les fondamentaux',
@@ -68,34 +74,33 @@ def run_analysis(ticker):
     trader_social = Agent(
         role='Expert Sentiment Social',
         goal='Analyser X et Reddit',
-        backstory="Expert des réseaux sociaux et de la psychologie de marché.",
+        backstory="Expert réseaux sociaux.",
         llm=llm,
-        tools=[search_tool],
+        tools=[custom_search_tool], # On utilise notre outil manuel
         verbose=True,
         allow_delegation=False
     )
 
-    # 4. Tâches
+    # --- TÂCHES ---
     task_finance = Task(
-        description=f"Analyse les chiffres clés de {ticker} (Prix, PER, Dividende).",
+        description=f"Analyse les chiffres de {ticker} (Prix, PER, Dividende).",
         expected_output="Rapport financier court.",
         agent=analyste
     )
 
     task_social = Task(
         description=f"Cherche le sentiment sur {ticker} via 'site:twitter.com {ticker}' et Reddit.",
-        expected_output="Synthèse de l'humeur sociale.",
+        expected_output="Synthèse humeur.",
         agent=trader_social
     )
 
     task_final = Task(
-        description=f"Synthétise les chiffres et l'humeur pour {ticker}. Donne une recommandation (Achat/Vente/Attente).",
-        expected_output="Rapport final structuré en Markdown.",
+        description=f"Synthèse finale pour {ticker}. Recommandation (Achat/Vente ?).",
+        expected_output="Rapport final structuré.",
         agent=analyste,
         context=[task_finance, task_social]
     )
 
-    # 5. Crew
     crew = Crew(
         agents=[analyste, trader_social],
         tasks=[task_finance, task_social, task_final],
@@ -104,23 +109,20 @@ def run_analysis(ticker):
 
     return crew.kickoff()
 
-# --- INTERFACE PRINCIPALE ---
-ticker_input = st.text_input("Symbole de l'action (ex: TTE.PA, AI.PA, MC.PA)", "TTE.PA")
+# --- INTERFACE ---
+ticker_input = st.text_input("Symbole de l'action (ex: TTE.PA)", "TTE.PA")
 
 if st.button("Lancer l'analyse 🚀"):
     if not api_key:
-        st.error("Merci d'entrer une clé API Groq dans la barre latérale.")
+        st.error("Entre ta clé API Groq à gauche !")
     else:
-        with st.status("L'agent travaille... (Regarde les détails ici)", expanded=True) as status:
-            st.write("🤖 Initialisation des agents...")
+        with st.status("Travail en cours...", expanded=True) as status:
             try:
-                resultat = run_analysis(ticker_input)
-                st.write("✅ Analyse terminée !")
-                status.update(label="Mission accomplie !", state="complete", expanded=False)
-                
-                st.divider()
-                st.subheader("Rapport Final")
-                st.markdown(resultat)
+                st.write("🤖 Initialisation...")
+                res = run_analysis(ticker_input)
+                status.update(label="Terminé !", state="complete", expanded=False)
+                st.markdown("### 📊 Rapport Final")
+                st.markdown(res)
             except Exception as e:
-                st.error(f"Une erreur est survenue : {e}")
+                st.error(f"Erreur : {e}")
                 status.update(label="Erreur", state="error")

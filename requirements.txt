@@ -1,6 +1,7 @@
-crewai
-crewai-tools
+crewai==1.7.2
+crewai-tools==1.7.2
 langchain_groq
+langchain_community
+duckduckgo-search
 yfinance
 streamlit
-duckduckgo-search
