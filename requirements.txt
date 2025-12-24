@@ -1,8 +1,12 @@
 crewai
 crewai-tools
+litellm
 langchain
 langchain_community
-langchain-google-genai
+langchain_google_genai
 duckduckgo-search>=6.0.0
 yfinance
 streamlit
+fastapi
+uvicorn
+apscheduler
